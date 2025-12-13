@@ -1,2 +1,6 @@
-print("Inizializzazione progetto tesi - placeholder per push GitHub.")
-print("Il codice vero lo scrivo domani.")
+def main():
+    print("Quantitative Finance Master Thesis")
+    print("Forecasting pipeline - work in progress")
+
+if __name__ == "__main__":
+    main()
