@@ -2,6 +2,9 @@ from statsmodels.tsa.arima.model import ARIMA
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error
 import numpy as np
+from sklearn.svm import SVR
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 
 def train_arima_model(series, order=(1, 1, 1)):
     model = ARIMA(series, order=order)
