@@ -1,22 +1,14 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from keras import layers
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error
+from keras import layers, models
 
-def create_sequences(data, window_size):
-    X, y = [], []
-    for i in range(len(data) - window_size):
-        X.append(data[i:i+window_size])
-        y.append(data[i+window_size])
-    return np.array(X), np.array(y)
-
+# === TRANSFORMER BLOCK ===
 class TransformerBlock(layers.Layer):
     def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
-        super().__init__()
+        super(TransformerBlock, self).__init__()
         self.att = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
-        self.ffn = tf.keras.Sequential([
+        self.ffn = models.Sequential([
             layers.Dense(ff_dim, activation="relu"),
             layers.Dense(embed_dim),
         ])
@@ -33,25 +25,56 @@ class TransformerBlock(layers.Layer):
         ffn_output = self.dropout2(ffn_output, training=training)
         return self.layernorm2(out1 + ffn_output)
 
+# === COSTRUZIONE DEL MODELLO TRANSFORMER ===
 def build_transformer_model(input_shape):
     inputs = layers.Input(shape=input_shape)
     x = TransformerBlock(embed_dim=input_shape[-1], num_heads=2, ff_dim=64)(inputs)
     x = layers.GlobalAveragePooling1D()(x)
-    x = layers.Dropout(0.1)(x)
     x = layers.Dense(32, activation="relu")(x)
-    x = layers.Dropout(0.1)(x)
+    x = layers.Dropout(0.2)(x)
     outputs = layers.Dense(1)(x)
-    model = tf.keras.Model(inputs=inputs, outputs=outputs)
+    model = models.Model(inputs=inputs, outputs=outputs)
     model.compile(optimizer="adam", loss="mse")
     return model
 
-def train_transformer_model(data, window_size=30, epochs=50, batch_size=16):
-    scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(data.reshape(-1, 1))
+# === TRAINING DEL MODELLO TRANSFORMER ===
+def train_transformer_model(df):
+    sequence_length = 10
+    data = df["scaled"].values
+    X, y, dates = [], [], []
 
-    X, y = create_sequences(scaled_data, window_size)
-    X = X.reshape(X.shape[0], X.shape[1], 1)
+    for i in range(len(data) - sequence_length):
+        X.append(data[i:i + sequence_length])
+        y.append(data[i + sequence_length])
+        dates.append(df.index[i + sequence_length])
 
-    model = build_transformer_model(X.shape[1:])
-    model.fit(X, y, epochs=epochs, batch_size=batch_size, verbose=1)
-    return model, scaler
+    X = np.array(X)
+    y = np.array(y)
+    dates = pd.to_datetime(dates)
+
+    # Aggiungi dimensione per compatibilità (features)
+    X = X[..., np.newaxis]
+
+    # Split temporale train/test
+    X_train, X_test = X[:-21], X[-21:]
+    y_train, y_test = y[:-21], y[-21:]
+    test_dates = dates[-21:]
+
+    # Costruisci e allena il modello
+    model = build_transformer_model(input_shape=(X.shape[1], X.shape[2]))
+    model.fit(X_train, y_train, epochs=20, batch_size=16, verbose=0)
+
+    # Previsioni
+    y_pred = model.predict(X_test).flatten()
+
+    # Parametri ottimali salvati
+    best_params = {
+        "sequence_length": sequence_length,
+        "num_heads": 2,
+        "ff_dim": 64,
+        "dropout": 0.2,
+        "batch_size": 16,
+        "epochs": 20
+    }
+
+    return test_dates, y_test, y_pred, best_params
