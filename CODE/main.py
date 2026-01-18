@@ -1,15 +1,19 @@
 # === IMPORTS ===
-from src.preprocessing import apply_log_return, scale_features
-from src.data_loader import download_commodity_data
-from src.models.arima import train_arima_model
-from src.models.svr import train_svr_model
-from src.models.random_forest import train_random_forest_model
-from src.visualisation import plot_forecast_vs_actual
-from src.models.transformer import train_transformer_model
 import matplotlib.pyplot as plt
 import pandas as pd
 import datetime
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+from src.preprocessing import apply_log_return, scale_features
+from src.data_loader import download_commodity_data
+from src.visualisation import plot_forecast_vs_actual
+
+# MODELLI
+from src.models.arima import train_arima_model
+from src.models.svr import train_svr_model
+from src.models.random_forest import train_random_forest_model
 from src.models.xgboost import train_xgboost_model
+from src.models.transformer import train_transformer_model
 from src.models.lstm import train_lstm_model
 from src.models.gru import train_gru_model
 
@@ -33,17 +37,14 @@ def load_and_preprocess(name, ticker):
     df = scale_features(df, column="log_return")
     return df
 
-def plot_forecast_vs_actual(y_true, y_pred, title="Forecast vs Real"):
-    plt.figure(figsize=(10, 4))
-    plt.plot(y_true.index, y_true.values, label="Real", color="blue")
-    plt.plot(y_true.index, y_pred, label="Forecast", color="orange", linestyle="--")
-    plt.title(title)
-    plt.xlabel("Date")
-    plt.ylabel("Log Return")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.show()
+def compute_metrics(y_true, y_pred):
+    rmse = mean_squared_error(y_true, y_pred, squared=False)
+    mae = mean_absolute_error(y_true, y_pred)
+    mape = (abs((y_true - y_pred) / y_true).mean()) * 100 if all(y_true != 0) else None
+    return rmse, mae, mape
+
+# === COLLECT ALL RESULTS ===
+results_list = []
 
 # === ARIMA ===
 for name, ticker in metals.items():
@@ -51,6 +52,10 @@ for name, ticker in metals.items():
     df = load_and_preprocess(name, ticker)
     y_true, y_pred = train_arima_model(df)
     plot_forecast_vs_actual(y_true, y_pred, title=f"{name} (2025) - ARIMA Forecast vs Real")
+    
+    rmse, mae, mape = compute_metrics(y_true, y_pred)
+    results_list.append({"Asset": name, "Model": "ARIMA", "RMSE": rmse, "MAE": mae, "MAPE": mape})
+
 
 # === SVR ===
 for name, ticker in metals.items():
@@ -63,8 +68,11 @@ for name, ticker in metals.items():
         title=f"{name} (2025) - SVR Forecast vs Real Performance"
     )
     print(f"Best params for {name}: {best_params}")
+    rmse, mae, mape = compute_metrics(y_true, y_pred)
+    results_list.append({"Asset": name, "Model": "SVR", "RMSE": rmse, "MAE": mae, "MAPE": mape})
 
-    # === Random Forest ===
+
+# === RANDOM FOREST ===
 for name, ticker in metals.items():
     print(f"\n🌲 Random Forest Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
@@ -75,60 +83,71 @@ for name, ticker in metals.items():
         title=f"{name} (2025) - Random Forest Forecast vs Real Performance"
     )
     print(f"Best params for {name}: {best_params}")
+    rmse, mae, mape = compute_metrics(y_true, y_pred)
+    results_list.append({"Asset": name, "Model": "Random Forest", "RMSE": rmse, "MAE": mae, "MAPE": mape})
 
- 
 
-# === TRANSFORMER ===
-for name, ticker in metals.items():
-    print(f"\n🧠 Transformer Forecasting for {name} ({ticker})")
-    df = load_and_preprocess(name, ticker)
-    dates, y_true, y_pred, best_params = train_transformer_model(df)
-
-    plot_forecast_vs_actual(
-        pd.Series(y_true, index=dates),
-        pd.Series(y_pred, index=dates),
-        title=f"{name} (2025) - Transformer Forecast vs Real Performance"
-    )
-
-    print(f"Best params for {name}: {best_params}")
-
-    # === XGBOOST ===
+# === XGBOOST ===
 for name, ticker in metals.items():
     print(f"\n⚡ XGBoost Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
     dates, y_true, y_pred, best_params = train_xgboost_model(df)
-
     plot_forecast_vs_actual(
         pd.Series(y_true, index=dates),
         pd.Series(y_pred, index=dates),
         title=f"{name} (2025) - XGBoost Forecast vs Real Performance"
     )
     print(f"Best params for {name}: {best_params}")
+    rmse, mae, mape = compute_metrics(y_true, y_pred)
+    results_list.append({"Asset": name, "Model": "XGBoost", "RMSE": rmse, "MAE": mae, "MAPE": mape})
+
+
+# === TRANSFORMER ===
+for name, ticker in metals.items():
+    print(f"\n🧠 Transformer Forecasting for {name} ({ticker})")
+    df = load_and_preprocess(name, ticker)
+    dates, y_true, y_pred, best_params = train_transformer_model(df)
+    plot_forecast_vs_actual(
+        pd.Series(y_true, index=dates),
+        pd.Series(y_pred, index=dates),
+        title=f"{name} (2025) - Transformer Forecast vs Real Performance"
+    )
+    print(f"Best params for {name}: {best_params}")
+    rmse, mae, mape = compute_metrics(y_true, y_pred)
+    results_list.append({"Asset": name, "Model": "Transformer", "RMSE": rmse, "MAE": mae, "MAPE": mape})
+
 
 # === LSTM ===
-
 for name, ticker in metals.items():
     print(f"\n🧬 LSTM Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
     dates, y_true, y_pred, best_params = train_lstm_model(df)
-
     plot_forecast_vs_actual(
         pd.Series(y_true, index=dates),
         pd.Series(y_pred, index=dates),
         title=f"{name} (2025) - LSTM Forecast vs Real Performance"
     )
     print(f"Best params for {name}: {best_params}")
+    rmse, mae, mape = compute_metrics(y_true, y_pred)
+    results_list.append({"Asset": name, "Model": "LSTM", "RMSE": rmse, "MAE": mae, "MAPE": mape})
+
 
 # === GRU ===
-
 for name, ticker in metals.items():
     print(f"\n🔁 GRU Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
     dates, y_true, y_pred, best_params = train_gru_model(df)
-
     plot_forecast_vs_actual(
         pd.Series(y_true, index=dates),
         pd.Series(y_pred, index=dates),
         title=f"{name} (2025) - GRU Forecast vs Real Performance"
     )
     print(f"Best params for {name}: {best_params}")
+    rmse, mae, mape = compute_metrics(y_true, y_pred)
+    results_list.append({"Asset": name, "Model": "GRU", "RMSE": rmse, "MAE": mae, "MAPE": mape})
+
+
+# === SALVA METRICHE ===
+results_df = pd.DataFrame(results_list)
+results_df.to_csv("results/forecast_metrics.csv", index=False)
+print("\n📊 Saved all metrics to results/forecast_metrics.csv")
