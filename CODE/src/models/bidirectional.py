@@ -1,31 +1,45 @@
-# src/models/bi_lstm.py
-
 import numpy as np
+import pandas as pd
 from keras.models import Sequential
-from keras.layers import Bidirectional, LSTM, Dense
-from keras.optimizers import Adam
+from keras.layers import Bidirectional, LSTM, Dense, Dropout
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error
 
-def create_sequences(data, window_size):
-    X, y = [], []
-    for i in range(len(data) - window_size):
-        X.append(data[i:i+window_size])
-        y.append(data[i+window_size])
-    return np.array(X), np.array(y)
+def train_bidirectional_model(df, sequence_length=10):
+    data = df["scaled"].values
+    dates = df.index
 
-def train_bi_lstm_model(data, window_size=30, epochs=50, batch_size=16):
-    scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(data.reshape(-1, 1))
+    X, y, out_dates = [], [], []
 
-    X, y = create_sequences(scaled_data, window_size)
-    X = X.reshape((X.shape[0], X.shape[1], 1))
+    for i in range(len(data) - sequence_length):
+        X.append(data[i:i + sequence_length])
+        y.append(data[i + sequence_length])
+        out_dates.append(dates[i + sequence_length])
+
+    X = np.array(X)[..., np.newaxis]
+    y = np.array(y)
+    out_dates = pd.to_datetime(out_dates)
+
+    # Train-test split
+    X_train, X_test = X[:-21], X[-21:]
+    y_train, y_test = y[:-21], y[-21:]
+    test_dates = out_dates[-21:]
 
     model = Sequential()
-    model.add(Bidirectional(LSTM(units=50), input_shape=(X.shape[1], 1)))
+    model.add(Bidirectional(LSTM(64)))
+    model.add(Dropout(0.2))
     model.add(Dense(1))
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+    model.compile(optimizer="adam", loss="mse")
 
-    model.fit(X, y, epochs=epochs, batch_size=batch_size, verbose=1)
+    model.fit(X_train, y_train, epochs=20, batch_size=16, verbose=0)
 
-    return model, scaler, X, y
+    y_pred = model.predict(X_test).flatten()
+
+    best_params = {
+        "sequence_length": sequence_length,
+        "units": 64,
+        "dropout": 0.2,
+        "epochs": 20,
+        "batch_size": 16
+    }
+
+    return test_dates, y_test, y_pred, best_params

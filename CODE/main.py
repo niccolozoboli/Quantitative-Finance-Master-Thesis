@@ -16,6 +16,7 @@ from src.models.xgboost import train_xgboost_model
 from src.models.transformer import train_transformer_model
 from src.models.lstm import train_lstm_model
 from src.models.gru import train_gru_model
+from src.models.decision_tree import train_decision_tree_model
 
 # === CONFIG ===
 metals = {
@@ -47,19 +48,46 @@ def compute_metrics(y_true, y_pred):
 results_list = []
 
 # === ARIMA ===
+from src.models.arima import (
+    train_arima_model,
+    forecast_arima,
+    evaluate_arima,
+    plot_arima_results
+)
+
 for name, ticker in metals.items():
-    print(f"\n📈 ARIMA Forecasting for {name} ({ticker})")
+    print(f"\nARIMA Forecasting for {name} ({ticker})")
+
     df = load_and_preprocess(name, ticker)
-    y_true, y_pred = train_arima_model(df)
-    plot_forecast_vs_actual(y_true, y_pred, title=f"{name} (2025) - ARIMA Forecast vs Real")
-    
-    rmse, mae, mape = compute_metrics(y_true, y_pred)
-    results_list.append({"Asset": name, "Model": "ARIMA", "RMSE": rmse, "MAE": mae, "MAPE": mape})
+
+    series = df["scaled"]
+    train_series = series[:-21]
+    test_series = series[-21:]
+
+    model_fit = train_arima_model(train_series, order=(1, 1, 1))
+    y_pred = forecast_arima(model_fit, steps=21)
+    metrics = evaluate_arima(test_series, y_pred)
+
+    plot_arima_results(
+        df.index,
+        train_series,
+        test_series,
+        y_pred,
+        title=f"{name} (2025) - ARIMA Forecast vs Real"
+    )
+
+    results_list.append({
+        "Asset": name,
+        "Model": "ARIMA",
+        "RMSE": metrics["RMSE"],
+        "MAE": metrics["MAE"],
+        "MAPE": None
+    })
 
 
 # === SVR ===
 for name, ticker in metals.items():
-    print(f"\n🤖 SVR Forecasting for {name} ({ticker})")
+    print(f"\nSVR Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
     dates, y_true, y_pred, best_params = train_svr_model(df)
     plot_forecast_vs_actual(
@@ -74,7 +102,7 @@ for name, ticker in metals.items():
 
 # === RANDOM FOREST ===
 for name, ticker in metals.items():
-    print(f"\n🌲 Random Forest Forecasting for {name} ({ticker})")
+    print(f"\nRandom Forest Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
     dates, y_true, y_pred, best_params = train_random_forest_model(df)
     plot_forecast_vs_actual(
@@ -89,7 +117,7 @@ for name, ticker in metals.items():
 
 # === XGBOOST ===
 for name, ticker in metals.items():
-    print(f"\n⚡ XGBoost Forecasting for {name} ({ticker})")
+    print(f"\nXGBoost Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
     dates, y_true, y_pred, best_params = train_xgboost_model(df)
     plot_forecast_vs_actual(
@@ -104,7 +132,7 @@ for name, ticker in metals.items():
 
 # === TRANSFORMER ===
 for name, ticker in metals.items():
-    print(f"\n🧠 Transformer Forecasting for {name} ({ticker})")
+    print(f"\nTransformer Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
     dates, y_true, y_pred, best_params = train_transformer_model(df)
     plot_forecast_vs_actual(
@@ -119,7 +147,7 @@ for name, ticker in metals.items():
 
 # === LSTM ===
 for name, ticker in metals.items():
-    print(f"\n🧬 LSTM Forecasting for {name} ({ticker})")
+    print(f"\nLSTM Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
     dates, y_true, y_pred, best_params = train_lstm_model(df)
     plot_forecast_vs_actual(
@@ -134,7 +162,7 @@ for name, ticker in metals.items():
 
 # === GRU ===
 for name, ticker in metals.items():
-    print(f"\n🔁 GRU Forecasting for {name} ({ticker})")
+    print(f"\nGRU Forecasting for {name} ({ticker})")
     df = load_and_preprocess(name, ticker)
     dates, y_true, y_pred, best_params = train_gru_model(df)
     plot_forecast_vs_actual(
@@ -146,8 +174,22 @@ for name, ticker in metals.items():
     rmse, mae, mape = compute_metrics(y_true, y_pred)
     results_list.append({"Asset": name, "Model": "GRU", "RMSE": rmse, "MAE": mae, "MAPE": mape})
 
+# === DECISION TREE ===
+for name, ticker in metals.items():
+    print(f"\nDecision Tree Forecasting for {name} ({ticker})")
+    df = load_and_preprocess(name, ticker)
+    dates, y_true, y_pred, best_params = train_decision_tree_model(df)
+    plot_forecast_vs_actual(
+        pd.Series(y_true, index=dates),
+        pd.Series(y_pred, index=dates),
+        title=f"{name} (2025) - Decision Tree Forecast vs Real Performance"
+    )
+    print(f"Best params for {name}: {best_params}")
+    rmse, mae, mape = compute_metrics(y_true, y_pred)
+    results_list.append({"Asset": name, "Model": "Decision Tree", "RMSE": rmse, "MAE": mae, "MAPE": mape})
+
 
 # === SALVA METRICHE ===
 results_df = pd.DataFrame(results_list)
 results_df.to_csv("results/forecast_metrics.csv", index=False)
-print("\n📊 Saved all metrics to results/forecast_metrics.csv")
+print("\nSaved all metrics to results/forecast_metrics.csv")
