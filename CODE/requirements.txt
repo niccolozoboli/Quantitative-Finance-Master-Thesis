@@ -1,0 +1,10 @@
+yfinance>=0.2.36
+pandas>=2.0.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+statsmodels>=0.14.0
+arch>=6.3.0
+xgboost>=2.0.0
+tensorflow>=2.15.0
+keras>=2.15.0
+matplotlib>=3.8.0
