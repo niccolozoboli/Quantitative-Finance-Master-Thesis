@@ -1,0 +1,11 @@
+Model,DM Stat,p-value,Sig. (5%),Result
+ARIMA,-0.9587,0.3377,No,No significant difference (p=0.338)
+Decision Tree,-0.6546,0.5127,No,No significant difference (p=0.513)
+Random Forest,-0.2128,0.8315,No,No significant difference (p=0.831)
+Gradient Boosting,0.1261,0.8997,No,No significant difference (p=0.900)
+XGBoost,1.3204,0.1867,No,No significant difference (p=0.187)
+SVR,1.0258,0.305,No,No significant difference (p=0.305)
+LSTM,0.5577,0.577,No,No significant difference (p=0.577)
+GRU,1.8567,0.0634,No,No significant difference (p=0.063)
+BiLSTM,0.8306,0.4062,No,No significant difference (p=0.406)
+Transformer,0.6109,0.5413,No,No significant difference (p=0.541)
