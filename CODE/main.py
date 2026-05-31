@@ -1,7 +1,5 @@
 """
-Quantitative Finance Master Thesis
-====================================
-Commodity Price Forecasting: Econometric vs ML vs DL Models
+main.py — Quantitative Finance Master Thesis v2.0
 """
 
 import numpy as np
@@ -16,6 +14,8 @@ from src.regime            import classify_regimes, split_by_regime, regime_summ
 from src.statistical_tests import (random_walk_forecast,
                                     compute_random_walk_metrics,
                                     build_dm_table)
+from src.backtesting       import (run_backtest, regime_conditional_strategy,
+                                    backtest_summary_table)
 from src.visualization     import (
     plot_returns_forecast, plot_price_comparison,
     plot_all_models_prices, plot_garch_volatility,
@@ -30,10 +30,11 @@ from src.models.garch     import run_garch_fold
 from src.models.ml_models import (run_rf_fold, run_xgboost_fold,
                                    run_gbm_fold, run_svr_fold, run_dt_fold)
 from src.models.dl_models import (run_lstm_fold, run_gru_fold,
-                                   run_bilstm_fold, run_transformer_fold)
+                                   run_bilstm_fold, run_transformer_fold,
+                                   run_tcn_fold, run_cnn_lstm_fold)
 
 START = "2010-01-01"
-END   = "2025-01-01"
+END   = "2026-05-01"   # aggiornato — include dati fino ad oggi
 
 MODELS = [
     ("Random_Walk",       None),
@@ -47,23 +48,16 @@ MODELS = [
     ("GRU",               run_gru_fold),
     ("BiLSTM",            run_bilstm_fold),
     ("Transformer",       run_transformer_fold),
+    ("TCN",               run_tcn_fold),
+    ("CNN_LSTM",          run_cnn_lstm_fold),
 ]
 
-# ── Plot folder structure ──────────────────────────────────────────────────────
-# results/plots/
-#   01_logreturn_forecast/     → predicted vs actual log-returns + residuals
-#   02_predicted_vs_real_price/→ reconstructed price vs real price (per model)
-#   03_all_models_price_overlay/→ all models on same chart vs real price
-#   04_volatility_regimes/     → rolling vol + regime shading
-#   05_regime_performance/     → RMSE by stable/normal/volatile
-#   06_diebold_mariano/        → DM test vs random walk
-#   07_heatmaps/               → RMSE/MAE heatmap models x assets
-#   08_model_ranking/          → final ranking bar chart
-#   09_dashboard/              → summary dashboard
+DL_MODELS = {"LSTM", "GRU", "BiLSTM", "Transformer", "TCN", "CNN_LSTM"}
+ML_MODELS = {"Decision_Tree", "Random_Forest", "Gradient_Boosting",
+             "XGBoost", "SVR"}
 
 
 def p(folder, filename):
-    """Builds a clean save path."""
     import os
     path = f"results/plots/{folder}/{filename}.png"
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -71,21 +65,34 @@ def p(folder, filename):
 
 
 def run_pipeline():
-    results_list = []
+    results_list   = []
+    bt_results_all = {}
 
+    # ── Carica tutti gli asset prima del loop ─────────────────────────────────
+    print("\nCaricamento dati...")
+    all_dfs = {}
+    for metal_name, ticker in METALS.items():
+        all_dfs[metal_name] = load_and_preprocess(
+            metal_name, ticker, start=START, end=END)
+        n = len(all_dfs[metal_name])
+        print(f"  {metal_name}: {n} osservazioni")
+
+    # ── Loop principale per asset ─────────────────────────────────────────────
     for metal_name, ticker in METALS.items():
         print(f"\n{'='*64}")
         print(f"  ASSET: {metal_name}  ({ticker})")
         print(f"{'='*64}")
 
-        df = load_and_preprocess(metal_name, ticker, start=START, end=END)
+        df = all_dfs[metal_name]
         n  = len(df)
-        print(f"  Observations: {n}  "
-              f"({df.index[0].date()} → {df.index[-1].date()})")
 
-        # ── Regime classification ─────────────────────────────────────
+        # Cross-asset: tutti gli asset tranne quello corrente
+        cross_asset_dfs = {k: v for k, v in all_dfs.items()
+                           if k != metal_name}
+
+        # ── Regime classification ─────────────────────────────────────────────
         regimes = classify_regimes(df)
-        print(f"\n  Regime distribution:\n{regime_summary(df).to_string()}")
+        print(f"\n  Regime:\n{regime_summary(df).to_string()}")
 
         plot_rolling_vol_regimes(
             df, regimes, asset_name=metal_name,
@@ -93,14 +100,15 @@ def run_pipeline():
                         f"{metal_name}_rolling_volatility_with_regimes"))
 
         folds = get_walk_forward_folds(n)
-        print(f"\n  Walk-forward: {len(folds)} folds × 21 days\n")
+        print(f"\n  Walk-forward: {len(folds)} folds × 21 giorni "
+              f"= {len(folds)*21} giorni OOS\n")
 
         all_true     = {m: [] for m, _ in MODELS}
         all_pred     = {m: [] for m, _ in MODELS}
         all_dates    = {m: [] for m, _ in MODELS}
         all_fmetrics = {m: [] for m, _ in MODELS}
 
-        # ── Fold loop ─────────────────────────────────────────────────
+        # ── Loop fold ─────────────────────────────────────────────────────────
         for fi, (train_idx, test_idx) in enumerate(folds):
             print(f"  Fold {fi+1}/{len(folds)}  "
                   f"({df.index[test_idx[0]].date()} → "
@@ -115,15 +123,23 @@ def run_pipeline():
                     dates  = dates_fold
                 else:
                     try:
-                        dates, y_true_fold, y_pred, _ = run_fn(
-                            df, train_idx, test_idx)
+                        if model_name in DL_MODELS:
+                            result = run_fn(df, train_idx, test_idx,
+                                            cross_asset_dfs=cross_asset_dfs)
+                        elif model_name in ML_MODELS:
+                            result = run_fn(df, train_idx, test_idx,
+                                            cross_asset_dfs=cross_asset_dfs)
+                        else:
+                            result = run_fn(df, train_idx, test_idx)
+
+                        dates, y_true_fold, y_pred, _ = result
+
                     except Exception as e:
-                        print(f"    {model_name}: ERROR {e}")
+                        print(f"    {model_name}: ERRORE {e}")
                         all_fmetrics[model_name].append(
                             {"RMSE": None, "MAE": None, "MAPE": None})
                         continue
 
-                # ── Align lengths (ARIMA and some models lose 1 obs) ──
                 n_align    = min(len(y_true_fold), len(y_pred), len(dates_fold))
                 y_true_aln = np.array(y_true_fold)[-n_align:]
                 y_pred_aln = np.array(y_pred)[-n_align:]
@@ -134,12 +150,12 @@ def run_pipeline():
                 all_pred[model_name].append(y_pred_aln)
                 all_dates[model_name].append(dates_aln)
                 all_fmetrics[model_name].append(metrics)
-                print(f"    {model_name:20s}  "
+                print(f"    {model_name:22s}  "
                       f"RMSE={metrics['RMSE']:.6f}  "
                       f"MAE={metrics['MAE']:.6f}")
 
-        # ── GARCH ─────────────────────────────────────────────────────
-        print(f"\n  [GARCH — Volatility]")
+        # ── GARCH ─────────────────────────────────────────────────────────────
+        print(f"\n  [GARCH — Volatilità]")
         g_real_all, g_fc_all, g_dates_all = [], [], []
         for fi, (train_idx, test_idx) in enumerate(folds):
             try:
@@ -151,21 +167,21 @@ def run_pipeline():
                 print(f"    Fold {fi+1}: Vol-RMSE={gm['RMSE']:.6f}  "
                       f"persistence={gp['persistence']:.4f}")
             except Exception as e:
-                print(f"    Fold {fi+1}: GARCH ERROR {e}")
+                print(f"    Fold {fi+1}: GARCH ERRORE {e}")
 
-        # ── Aggregate metrics ─────────────────────────────────────────
-        print(f"\n  ── Aggregated Results ──")
+        # ── Aggregazione metriche ─────────────────────────────────────────────
+        print(f"\n  ── Risultati Aggregati ──")
         for model_name, _ in MODELS:
             agg = aggregate_fold_results(all_fmetrics[model_name])
-            print(f"    {model_name:20s}  RMSE={agg['RMSE']}  "
-                  f"MAE={agg['MAE']}  MAPE={agg['MAPE']}")
+            print(f"    {model_name:22s}  RMSE={agg['RMSE']}  "
+                  f"MAE={agg['MAE']}")
             results_list.append({
                 "Asset": metal_name,
                 "Model": model_name.replace("_", " "),
                 **agg
             })
 
-        # ── Concatenate fold predictions ──────────────────────────────
+        # ── Concatenazione previsioni ─────────────────────────────────────────
         concat = {}
         for model_name, _ in MODELS:
             if not all_true[model_name]:
@@ -179,8 +195,8 @@ def run_pipeline():
                 "dates":  dates_concat,
             }
 
-        # ── Diebold-Mariano vs Random Walk ────────────────────────────
-        print(f"\n  ── Diebold-Mariano Tests ──")
+        # ── Diebold-Mariano ───────────────────────────────────────────────────
+        print(f"\n  ── Diebold-Mariano ──")
         dm_preds = {
             mn.replace("_", " "): concat[mn]["y_pred"]
             for mn, _ in MODELS
@@ -196,7 +212,7 @@ def run_pipeline():
             save_path=p("06_diebold_mariano",
                         f"{metal_name}_DM_test_vs_RandomWalk"))
 
-        # ── Regime analysis ───────────────────────────────────────────
+        # ── Regime analysis ───────────────────────────────────────────────────
         print(f"\n  ── Regime Analysis ──")
         regime_results = {}
         for model_name, _ in MODELS:
@@ -205,11 +221,12 @@ def run_pipeline():
             c = concat[model_name]
             splits = split_by_regime(
                 c["y_true"], c["y_pred"], c["dates"], regimes)
-            regime_results[model_name.replace("_", " ")] = {}
+            label = model_name.replace("_", " ")
+            regime_results[label] = {}
             for regime, (yt, yp) in splits.items():
                 m = compute_metrics(yt, yp)
-                regime_results[model_name.replace("_", " ")][regime] = m
-                print(f"    {model_name:20s} [{regime:8s}]  "
+                regime_results[label][regime] = m
+                print(f"    {model_name:22s} [{regime:8s}]  "
                       f"RMSE={m['RMSE']:.6f}")
 
         plot_all_models_regime(
@@ -217,35 +234,66 @@ def run_pipeline():
             save_path=p("05_regime_performance",
                         f"{metal_name}_RMSE_by_regime_all_models"))
 
-        # ── Price reconstruction + individual plots ───────────────────
-        model_pred_prices = {}
+        # ── BACKTESTING ───────────────────────────────────────────────────────
+        print(f"\n  ── Backtesting ──")
+        bt_results = {}
+        for model_name, _ in MODELS:
+            if model_name not in concat:
+                continue
+            c  = concat[model_name]
+            bt = run_backtest(c["y_true"], c["y_pred"],
+                              transaction_cost=0.0001)
+            bt_results[model_name.replace("_", " ")] = bt
+            print(f"    {model_name:22s}  "
+                  f"Sharpe={bt['Sharpe Ratio']:6.3f}  "
+                  f"DA={bt['Directional Acc.']:5.1f}%  "
+                  f"MaxDD={bt['Max Drawdown (%)']:6.2f}%")
 
+        bt_df = backtest_summary_table(bt_results)
+        bt_df.to_csv(f"results/backtest_{metal_name}.csv")
+        bt_results_all[metal_name] = bt_results
+
+        # ── REGIME-CONDITIONAL STRATEGY ───────────────────────────────────────
+        print(f"\n  ── Regime-Conditional Strategy ──")
+        rcs_results = {}
         for model_name, _ in MODELS:
             if model_name not in concat:
                 continue
             c          = concat[model_name]
-            dates_all  = c["dates"]
-            y_pred_all = c["y_pred"]
-            y_true_all_m = c["y_true"]
-            label      = model_name.replace("_", " ")
+            y_pred_rcs = regime_conditional_strategy(
+                c["y_pred"], c["dates"], regimes)
+            bt_rcs = run_backtest(c["y_true"], y_pred_rcs,
+                                  transaction_cost=0.0001)
+            rcs_results[model_name.replace("_", " ")] = bt_rcs
+            print(f"    {model_name:22s} [RCS]  "
+                  f"Sharpe={bt_rcs['Sharpe Ratio']:6.3f}  "
+                  f"DA={bt_rcs['Directional Acc.']:5.1f}%")
 
-            # 01 — log-return forecast + residuals
+        rcs_df = backtest_summary_table(rcs_results)
+        rcs_df.to_csv(f"results/backtest_rcs_{metal_name}.csv")
+
+        # ── Plot individuali ──────────────────────────────────────────────────
+        model_pred_prices = {}
+        for model_name, _ in MODELS:
+            if model_name not in concat:
+                continue
+            c     = concat[model_name]
+            label = model_name.replace("_", " ")
+
             plot_returns_forecast(
-                pd.Series(y_true_all_m, index=dates_all),
-                pd.Series(y_pred_all,   index=dates_all),
+                pd.Series(c["y_true"], index=c["dates"]),
+                pd.Series(c["y_pred"], index=c["dates"]),
                 model_name=label, asset_name=metal_name,
                 save_path=p("01_logreturn_forecast",
                             f"{metal_name}_{model_name}_logreturn_forecast_vs_actual"))
 
-            # Price reconstruction
-            prices_before = df["Close"][df.index < dates_all[0]]
+            prices_before = df["Close"][df.index < c["dates"][0]]
             last_price    = float(prices_before.iloc[-1])
-            pred_prices   = reconstruct_prices(last_price, y_pred_all)
-            pred_series   = pd.Series(pred_prices, index=dates_all)
-            real_prices   = df["Close"].reindex(dates_all, method="nearest")
+            pred_prices   = reconstruct_prices(last_price, c["y_pred"])
+            pred_series   = pd.Series(pred_prices, index=c["dates"])
+            real_prices   = df["Close"].reindex(c["dates"], method="nearest")
             model_pred_prices[label] = pred_series
 
-            # 02 — predicted price vs real price
             plot_price_comparison(
                 real_prices=real_prices,
                 predicted_prices=pred_series,
@@ -253,7 +301,6 @@ def run_pipeline():
                 save_path=p("02_predicted_vs_real_price",
                             f"{metal_name}_{model_name}_predicted_vs_real_price"))
 
-        # 03 — all models overlay vs real price
         if model_pred_prices:
             ref_dates   = list(model_pred_prices.values())[0].index
             real_prices = df["Close"].reindex(ref_dates, method="nearest")
@@ -264,7 +311,6 @@ def run_pipeline():
                 save_path=p("03_all_models_price_overlay",
                             f"{metal_name}_all_models_predicted_vs_real_price"))
 
-        # GARCH volatility
         if g_real_all:
             g_dates_concat = g_dates_all[0]
             for d in g_dates_all[1:]:
@@ -276,56 +322,51 @@ def run_pipeline():
                 save_path=p("04_volatility_regimes",
                             f"{metal_name}_GARCH_volatility_forecast_vs_realized"))
 
-    # ── Final comparison charts ───────────────────────────────────────────────
+    # ── Output finale ─────────────────────────────────────────────────────────
     results_df = save_results(results_list, path="results/metrics.csv")
     valid_df   = results_df.dropna(subset=["RMSE"])
 
     print("\n" + "="*64)
-    print("  FINAL RANKING  (mean RMSE across all assets)")
+    print("  RANKING FINALE — RMSE medio")
     print("="*64)
-    ranking = valid_df.groupby("Model")[["RMSE","MAE"]].mean().sort_values("RMSE")
+    ranking = (valid_df.groupby("Model")[["RMSE", "MAE"]]
+               .mean().sort_values("RMSE"))
     print(ranking.to_string())
 
+    print("\n" + "="*64)
+    print("  RANKING FINALE — Sharpe medio")
+    print("="*64)
+    sharpe_rows = []
+    for asset_name, bt_res in bt_results_all.items():
+        for model_name, bt in bt_res.items():
+            sharpe_rows.append({
+                "Asset": asset_name, "Model": model_name,
+                "Sharpe": bt["Sharpe Ratio"],
+                "MaxDD":  bt["Max Drawdown (%)"],
+                "DA":     bt["Directional Acc."]
+            })
+    sharpe_df = pd.DataFrame(sharpe_rows)
+    sharpe_df.to_csv("results/backtesting_all_assets.csv", index=False)
+    sharpe_ranking = (sharpe_df.groupby("Model")[["Sharpe", "MaxDD", "DA"]]
+                      .mean().sort_values("Sharpe", ascending=False))
+    print(sharpe_ranking.to_string())
+
     for metric in ["RMSE", "MAE"]:
-        plot_heatmap(
-            valid_df, metric=metric,
-            save_path=p("07_heatmaps",
-                        f"heatmap_{metric}_all_models_all_assets"))
-        plot_ranking(
-            valid_df, metric=metric,
-            save_path=p("08_model_ranking",
-                        f"model_ranking_mean_{metric}_all_assets"))
+        plot_heatmap(valid_df, metric=metric,
+                      save_path=p("07_heatmaps",
+                                  f"heatmap_{metric}_all_models_all_assets"))
+        plot_ranking(valid_df, metric=metric,
+                      save_path=p("08_model_ranking",
+                                  f"model_ranking_mean_{metric}_all_assets"))
+    plot_dashboard(valid_df,
+                    save_path=p("09_dashboard",
+                                "summary_dashboard_all_models_all_assets"))
 
-    plot_dashboard(
-        valid_df,
-        save_path=p("09_dashboard",
-                    "summary_dashboard_all_models_all_assets"))
-
-    if "Hit_Rate" in valid_df.columns:
-        plot_hit_rate_heatmap(
-            valid_df,
-            save_path=p("07_heatmaps",
-                        "heatmap_HitRate_all_models_all_assets"))
-    if "Sharpe" in valid_df.columns:
-        plot_sharpe_heatmap(
-            valid_df,
-            save_path=p("07_heatmaps",
-                        "heatmap_Sharpe_all_models_all_assets"))
-
-    print("\n✅  Pipeline complete. Output structure:")
-    print("    results/")
-    print("    ├── metrics.csv                         ← tutti i numeri")
-    print("    ├── DM_test_Gold.csv                    ← DM test per asset")
-    print("    └── plots/")
-    print("        ├── 01_logreturn_forecast/           log-return pred vs actual")
-    print("        ├── 02_predicted_vs_real_price/      prezzo predetto vs reale")
-    print("        ├── 03_all_models_price_overlay/     tutti i modelli vs prezzo reale")
-    print("        ├── 04_volatility_regimes/           volatilità + regimi + GARCH")
-    print("        ├── 05_regime_performance/           RMSE per regime")
-    print("        ├── 06_diebold_mariano/              DM test vs random walk")
-    print("        ├── 07_heatmaps/                     heatmap RMSE/MAE")
-    print("        ├── 08_model_ranking/                classifica finale")
-    print("        └── 09_dashboard/                    dashboard riassuntivo")
+    print("\n✅  Pipeline completa.")
+    print("    results/metrics.csv")
+    print("    results/backtest_<asset>.csv")
+    print("    results/backtest_rcs_<asset>.csv")
+    print("    results/backtesting_all_assets.csv")
 
     return results_df
 

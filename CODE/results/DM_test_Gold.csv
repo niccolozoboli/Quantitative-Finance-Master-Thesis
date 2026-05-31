@@ -1,11 +1,13 @@
 Model,DM Stat,p-value,Sig. (5%),Result
-ARIMA,-0.9587,0.3377,No,No significant difference (p=0.338)
-Decision Tree,-0.6546,0.5127,No,No significant difference (p=0.513)
-Random Forest,-0.2128,0.8315,No,No significant difference (p=0.831)
-Gradient Boosting,0.1261,0.8997,No,No significant difference (p=0.900)
-XGBoost,1.3204,0.1867,No,No significant difference (p=0.187)
-SVR,1.0258,0.305,No,No significant difference (p=0.305)
-LSTM,0.5577,0.577,No,No significant difference (p=0.577)
-GRU,1.8567,0.0634,No,No significant difference (p=0.063)
-BiLSTM,0.8306,0.4062,No,No significant difference (p=0.406)
-Transformer,0.6109,0.5413,No,No significant difference (p=0.541)
+ARIMA,-0.984,0.3251,No,No significant difference (p=0.325)
+Decision Tree,1.0122,0.3115,No,No significant difference (p=0.311)
+Random Forest,0.3755,0.7073,No,No significant difference (p=0.707)
+Gradient Boosting,1.4329,0.1519,No,No significant difference (p=0.152)
+XGBoost,2.1623,0.0306,Yes,Model 2 significantly better
+SVR,3.0086,0.0026,Yes,Model 2 significantly better
+LSTM,-0.0632,0.9496,No,No significant difference (p=0.950)
+GRU,0.3865,0.6992,No,No significant difference (p=0.699)
+BiLSTM,0.1858,0.8526,No,No significant difference (p=0.853)
+Transformer,1.9555,0.0505,No,No significant difference (p=0.051)
+TCN,-0.0394,0.9686,No,No significant difference (p=0.969)
+CNN LSTM,-1.4053,0.1599,No,No significant difference (p=0.160)
