@@ -9,11 +9,12 @@ warnings.filterwarnings("ignore")
 
 from src.preprocessing     import METALS, load_and_preprocess, reconstruct_prices
 from src.walk_forward      import get_walk_forward_folds, aggregate_fold_results
-from src.utils             import compute_metrics, save_results
+from src.utils             import compute_metrics, save_results, set_global_seed
 from src.regime            import classify_regimes, split_by_regime, regime_summary
 from src.statistical_tests import (random_walk_forecast,
                                     compute_random_walk_metrics,
-                                    build_dm_table)
+                                    build_dm_table,
+                                    build_adf_table)
 from src.backtesting       import (run_backtest, regime_conditional_strategy,
                                     backtest_summary_table)
 from src.visualization     import (
@@ -65,6 +66,8 @@ def p(folder, filename):
 
 
 def run_pipeline():
+    set_global_seed(42)
+
     results_list   = []
     bt_results_all = {}
 
@@ -77,6 +80,14 @@ def run_pipeline():
         n = len(all_dfs[metal_name])
         print(f"  {metal_name}: {n} osservazioni")
 
+    # ── Test di stazionarietà ADF (Capitolo 3) ────────────────────────────────
+    print("\nTest ADF (stazionarietà)...")
+    price_series  = {m: df["Close"].values      for m, df in all_dfs.items()}
+    return_series = {m: df["log_return"].values for m, df in all_dfs.items()}
+    adf_table = build_adf_table(price_series, return_series)
+    print(adf_table.to_string())
+    adf_table.to_csv("results/adf_test.csv")
+
     # ── Loop principale per asset ─────────────────────────────────────────────
     for metal_name, ticker in METALS.items():
         print(f"\n{'='*64}")
@@ -86,9 +97,11 @@ def run_pipeline():
         df = all_dfs[metal_name]
         n  = len(df)
 
-        # Cross-asset: tutti gli asset tranne quello corrente
-        cross_asset_dfs = {k: v for k, v in all_dfs.items()
-                           if k != metal_name}
+        # Cross-asset: tutti gli asset, incluso quello corrente — necessario
+        # perché gs_spread/gc_spread siano disponibili anche quando l'asset
+        # modellato è esso stesso Gold/Silver/Copper. Feature laggate
+        # (shift(1) in feature_engine.py), nessun leakage.
+        cross_asset_dfs = all_dfs
 
         # ── Regime classification ─────────────────────────────────────────────
         regimes = classify_regimes(df)

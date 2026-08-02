@@ -3,6 +3,7 @@ statistical_tests.py
 --------------------
 Statistical validation tools for forecasting comparisons.
 
+0. ADF Stationarity Test (Augmented Dickey-Fuller)
 1. Random Walk (Naive) Baseline
 2. Diebold-Mariano Test (Diebold & Mariano, 1995)
 """
@@ -10,12 +11,50 @@ Statistical validation tools for forecasting comparisons.
 import numpy as np
 import pandas as pd
 from scipy import stats
+from statsmodels.tsa.stattools import adfuller
 
 
 def _align(y_true, y_pred):
     """Trim both arrays to the same length. Always safe."""
     n = min(len(y_true), len(y_pred))
     return np.array(y_true)[-n:], np.array(y_pred)[-n:]
+
+
+# ── 0. ADF Stationarity Test ──────────────────────────────────────────────────
+
+def adf_test(series: np.ndarray, regression: str = "c") -> dict:
+    """
+    Augmented Dickey-Fuller test for a unit root.
+    H0: series has a unit root (non-stationary).
+    Rejecting H0 (p < 0.05) => series is stationary.
+    Reporting-only: does not feed back into ARIMA's fixed d=0.
+    """
+    series = np.asarray(series, dtype=float)
+    series = series[~np.isnan(series)]
+    stat, pvalue, usedlag, nobs, crit_values, _ = adfuller(
+        series, regression=regression, autolag="AIC")
+    return {
+        "ADF Stat":        round(float(stat), 4),
+        "p-value":         round(float(pvalue), 4),
+        "Lags Used":       int(usedlag),
+        "N Obs":           int(nobs),
+        "Crit. 5%":        round(float(crit_values["5%"]), 4),
+        "Stationary (5%)": "Yes" if pvalue < 0.05 else "No",
+    }
+
+
+def build_adf_table(price_series: dict, return_series: dict) -> pd.DataFrame:
+    """
+    ADF test table per Capitolo 3: livello prezzo vs log-return, per asset.
+    price_series / return_series: dict {asset_name: array-like 1D}
+    """
+    rows = []
+    for asset in price_series:
+        rows.append({"Asset": asset, "Series": "Price",
+                     **adf_test(price_series[asset])})
+        rows.append({"Asset": asset, "Series": "Log-Return",
+                     **adf_test(return_series[asset])})
+    return pd.DataFrame(rows).set_index(["Asset", "Series"])
 
 
 # ── 1. Random Walk Baseline ───────────────────────────────────────────────────

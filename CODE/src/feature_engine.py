@@ -254,8 +254,16 @@ def build_dl_features(df: pd.DataFrame,
     Costruisce il DataFrame di feature per i modelli DL.
 
     Subset delle ML features ottimizzato per sequenze temporali:
-    - Non include lag espliciti (il modello DL vede già la sequenza)
-    - Include momentum, z-score, vol_ratio, cross-asset, calendar
+    - Non include lag/rolling stats espliciti (Gruppi 1-2): il modello DL
+      riceve già la sequenza grezza di SEQ_LEN=20 giorni di log_return,
+      quindi può in linea di principio apprendere da solo pattern
+      equivalenti (medie mobili, autocorrelazione a breve termine)
+      ENTRO quella finestra — scelta di design, non un'omissione.
+      NB: questo argomento non copre segnali con lookback > SEQ_LEN
+      (es. mom_63), che restano fuori dalla finestra e vanno quindi
+      inclusi esplicitamente come feature (vedi sotto).
+    - Include momentum (incluso mom_63, esplicito perché fuori dalla
+      finestra di sequenza), z-score, vol_ratio, cross-asset, calendar
     - Shape finale: (T, N_DL_FEATURES)
 
     La colonna 'log_return' è sempre inclusa come prima feature
@@ -270,8 +278,12 @@ def build_dl_features(df: pd.DataFrame,
     features["log_return"] = r
 
     # Feature 2-4: Momentum multi-scala
+    # mom_63 esplicito: con SEQ_LEN=20 il modello non può "vedere" da solo
+    # un segnale a 63 giorni, va quindi fornito come feature pre-calcolata
+    # (a differenza di mom_5/mom_21 che ricadono nella finestra di sequenza).
     features["mom_5"]  = r.shift(1).rolling(5).sum()
     features["mom_21"] = r.shift(1).rolling(21).sum()
+    features["mom_63"] = r.shift(1).rolling(63).sum()
 
     # Feature 5: Mean reversion z-score
     mu  = r.shift(1).rolling(21).mean()

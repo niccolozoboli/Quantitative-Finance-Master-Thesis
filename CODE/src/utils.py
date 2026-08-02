@@ -18,7 +18,23 @@ Metrics:
 import numpy as np
 import pandas as pd
 import os
+import random
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+
+def set_global_seed(seed: int = 42) -> None:
+    """
+    Seed centralizzato — Python random, NumPy, TensorFlow.
+    Va chiamato una sola volta, prima di qualsiasi training
+    (sklearn, XGBoost e Keras/TensorFlow).
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    try:
+        import tensorflow as tf
+        tf.random.set_seed(seed)
+    except ImportError:
+        pass
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
