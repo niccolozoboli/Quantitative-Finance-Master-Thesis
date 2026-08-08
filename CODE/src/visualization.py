@@ -270,7 +270,7 @@ def plot_dashboard(results_df: pd.DataFrame,
 
     fig.suptitle(
         "Model Performance Summary — Metal Commodity Forecasting\n"
-        "(metrics on log-return scale, averaged over 5 walk-forward folds)",
+        "(metrics on log-return scale, averaged over 10 walk-forward folds)",
         fontsize=13, fontweight="bold", y=1.01
     )
     _save(fig, save_path)

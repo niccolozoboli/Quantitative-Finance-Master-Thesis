@@ -2,6 +2,8 @@
 main.py — Quantitative Finance Master Thesis v2.0
 """
 
+import os
+import time
 import numpy as np
 import pandas as pd
 import warnings
@@ -57,6 +59,18 @@ DL_MODELS = {"LSTM", "GRU", "BiLSTM", "Transformer", "TCN", "CNN_LSTM"}
 ML_MODELS = {"Decision_Tree", "Random_Forest", "Gradient_Boosting",
              "XGBoost", "SVR"}
 
+TIME_LOG = []  # righe: Asset, Fold, Model, Group, Seconds, Error
+
+
+def _group_of(model_name):
+    if model_name in DL_MODELS:
+        return "DL"
+    if model_name in ML_MODELS:
+        return "ML"
+    if model_name == "Random_Walk":
+        return "Baseline"
+    return "Classical"  # ARIMA
+
 
 def p(folder, filename):
     import os
@@ -90,6 +104,9 @@ def run_pipeline():
 
     # ── Loop principale per asset ─────────────────────────────────────────────
     for metal_name, ticker in METALS.items():
+        if os.environ.get("QUICK_TIMING_TEST") and metal_name != next(iter(METALS)):
+            continue  # solo primo asset, per un test rapido del timer
+
         print(f"\n{'='*64}")
         print(f"  ASSET: {metal_name}  ({ticker})")
         print(f"{'='*64}")
@@ -123,6 +140,9 @@ def run_pipeline():
 
         # ── Loop fold ─────────────────────────────────────────────────────────
         for fi, (train_idx, test_idx) in enumerate(folds):
+            if os.environ.get("QUICK_TIMING_TEST") and fi > 0:
+                break  # solo primo fold, per un test rapido del timer
+
             print(f"  Fold {fi+1}/{len(folds)}  "
                   f"({df.index[test_idx[0]].date()} → "
                   f"{df.index[test_idx[-1]].date()})")
@@ -131,6 +151,7 @@ def run_pipeline():
             dates_fold  = df.index[test_idx]
 
             for model_name, run_fn in MODELS:
+                t0 = time.perf_counter()
                 if run_fn is None:
                     y_pred = random_walk_forecast(y_true_fold)
                     dates  = dates_fold
@@ -151,7 +172,17 @@ def run_pipeline():
                         print(f"    {model_name}: ERRORE {e}")
                         all_fmetrics[model_name].append(
                             {"RMSE": None, "MAE": None, "MAPE": None})
+                        TIME_LOG.append({
+                            "Asset": metal_name, "Fold": fi + 1,
+                            "Model": model_name, "Group": _group_of(model_name),
+                            "Seconds": time.perf_counter() - t0, "Error": True})
                         continue
+
+                elapsed = time.perf_counter() - t0
+                TIME_LOG.append({
+                    "Asset": metal_name, "Fold": fi + 1,
+                    "Model": model_name, "Group": _group_of(model_name),
+                    "Seconds": elapsed, "Error": False})
 
                 n_align    = min(len(y_true_fold), len(y_pred), len(dates_fold))
                 y_true_aln = np.array(y_true_fold)[-n_align:]
@@ -171,8 +202,16 @@ def run_pipeline():
         print(f"\n  [GARCH — Volatilità]")
         g_real_all, g_fc_all, g_dates_all = [], [], []
         for fi, (train_idx, test_idx) in enumerate(folds):
+            if os.environ.get("QUICK_TIMING_TEST") and fi > 0:
+                break
+
+            t0 = time.perf_counter()
             try:
                 gd, gr, gf, gp = run_garch_fold(df, train_idx, test_idx)
+                TIME_LOG.append({
+                    "Asset": metal_name, "Fold": fi + 1,
+                    "Model": "GARCH", "Group": "Classical",
+                    "Seconds": time.perf_counter() - t0, "Error": False})
                 g_real_all.append(gr)
                 g_fc_all.append(gf)
                 g_dates_all.append(df.index[test_idx])
@@ -180,6 +219,10 @@ def run_pipeline():
                 print(f"    Fold {fi+1}: Vol-RMSE={gm['RMSE']:.6f}  "
                       f"persistence={gp['persistence']:.4f}")
             except Exception as e:
+                TIME_LOG.append({
+                    "Asset": metal_name, "Fold": fi + 1,
+                    "Model": "GARCH", "Group": "Classical",
+                    "Seconds": time.perf_counter() - t0, "Error": True})
                 print(f"    Fold {fi+1}: GARCH ERRORE {e}")
 
         # ── Aggregazione metriche ─────────────────────────────────────────────
@@ -385,4 +428,11 @@ def run_pipeline():
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    results = run_pipeline()
+
+    if TIME_LOG:
+        timing_df = pd.DataFrame(TIME_LOG)
+        timing_df.to_csv("results/timing_log.csv", index=False)
+        print("\n  ── Tempo per gruppo (secondi) ──")
+        print(timing_df.groupby(["Group", "Model"])["Seconds"]
+              .agg(["mean", "sum", "count"]).sort_values("sum", ascending=False))
