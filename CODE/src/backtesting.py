@@ -1,11 +1,9 @@
 """
 backtesting.py
 --------------
-Backtesting layer — cuore del contributo Quantitative Finance.
-MODULO NUOVO.
-
-Trasforma ogni previsione in un segnale di trading e misura
-il valore economico generato.
+Traduce ogni previsione in un segnale di trading long/short e misura
+il valore economico generato (Sharpe, drawdown, directional accuracy),
+con costi di transazione.
 """
 
 import numpy as np
@@ -100,32 +98,6 @@ def regime_conditional_strategy(y_pred: np.ndarray,
             np.where(regime_aligned == "normal",   normal_scale,
                                                    volatile_scale))
     return y_pred * scale
-
-
-def buy_and_hold_backtest(y_true: np.ndarray,
-                           transaction_cost: float = 0.0001) -> dict:
-    """Benchmark passivo: sempre long."""
-    y_true   = np.array(y_true).flatten()
-    signal   = np.ones_like(y_true)
-    costs    = np.zeros_like(y_true)
-    costs[0] = transaction_cost
-    net_pnl  = signal * y_true - costs
-
-    cumulative_pnl = np.cumsum(net_pnl)
-    annual_return  = net_pnl.mean() * 252
-    annual_vol     = net_pnl.std()  * np.sqrt(252)
-    sharpe         = annual_return / annual_vol if annual_vol > 1e-10 else 0.0
-    running_max    = np.maximum.accumulate(cumulative_pnl)
-    max_drawdown   = float((cumulative_pnl - running_max).min())
-
-    return {
-        "Annual Return (%)": round(annual_return * 100, 3),
-        "Annual Vol (%)":    round(annual_vol    * 100, 3),
-        "Sharpe Ratio":      round(sharpe,              4),
-        "Max Drawdown (%)":  round(max_drawdown  * 100, 3),
-        "Cum. PnL":          cumulative_pnl,
-        "Net PnL":           net_pnl
-    }
 
 
 def backtest_summary_table(bt_results: dict) -> pd.DataFrame:

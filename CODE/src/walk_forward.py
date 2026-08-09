@@ -1,17 +1,15 @@
 """
 walk_forward.py
 ---------------
-10-fold chronological walk-forward validation.
-VERSIONE 2.0 — 10 fold invece di 5.
-
-Con 10 fold → 210 osservazioni OOS per asset.
-Maggiore potere statistico per il DM test.
+Walk-forward validation cronologica: 10 fold, finestra di training
+espandibile, 21 giorni di test per fold (210 osservazioni OOS totali
+per asset).
 """
 
 import numpy as np
 
-N_FOLDS   = 10   # aumentato da 5
-TEST_DAYS = 21   # ~1 mese trading per fold (invariato)
+N_FOLDS   = 10
+TEST_DAYS = 21   # ~1 mese trading per fold
 
 
 def get_walk_forward_folds(n: int,
@@ -47,18 +45,3 @@ def aggregate_fold_results(fold_metrics: list) -> dict:
                 if isinstance(m, dict) and m.get(k) is not None]
         agg[k] = round(float(np.mean(vals)), 6) if vals else None
     return agg
-
-
-def fold_summary(folds: list, df_index) -> None:
-    print(f"\n  Walk-forward: {len(folds)} fold × 21 giorni")
-    print(f"  {'Fold':<6} {'Train start':<14} {'Train end':<14} "
-          f"{'Test start':<14} {'Test end':<14} {'Train size':<12}")
-    print(f"  {'-'*74}")
-    for i, (tr, te) in enumerate(folds):
-        print(f"  {i+1:<6} "
-              f"{str(df_index[tr[0]].date()):<14} "
-              f"{str(df_index[tr[-1]].date()):<14} "
-              f"{str(df_index[te[0]].date()):<14} "
-              f"{str(df_index[te[-1]].date()):<14} "
-              f"{len(tr):<12}")
-    print(f"\n  Totale giorni OOS: {len(folds) * 21} per asset\n")

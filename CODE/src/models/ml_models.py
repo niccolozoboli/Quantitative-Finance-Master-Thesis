@@ -1,8 +1,9 @@
 """
 ml_models.py
 ------------
-Modelli tree-based e kernel ML.
-VERSIONE 2.0 — accetta cross_asset_dfs.
+Modelli tree-based e kernel ML: Random Forest, XGBoost, Gradient
+Boosting, SVR, Decision Tree. Grid search via TimeSeriesSplit (3 split
+interni), rieseguita da capo per ogni fold walk-forward.
 """
 
 import numpy as np

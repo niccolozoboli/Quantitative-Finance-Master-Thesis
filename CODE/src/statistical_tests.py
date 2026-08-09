@@ -68,12 +68,6 @@ def random_walk_forecast(y_true: np.ndarray) -> np.ndarray:
     return np.zeros_like(y_true)
 
 
-def compute_random_walk_metrics(y_true: np.ndarray) -> dict:
-    from src.utils import compute_metrics
-    y_pred = random_walk_forecast(y_true)
-    return compute_metrics(y_true, y_pred)
-
-
 # ── 2. Diebold-Mariano Test ───────────────────────────────────────────────────
 
 def diebold_mariano_test(y_true: np.ndarray,

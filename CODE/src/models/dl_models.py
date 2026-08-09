@@ -2,19 +2,13 @@
 dl_models.py
 ------------
 Modelli deep learning: LSTM, GRU, BiLSTM, Transformer, TCN, CNN-LSTM.
-VERSIONE 2.0 — Input MULTIVARIATO (seq_len, N_features).
 
-Cambiamenti rispetto alla v1:
-- Input shape: (seq_len, 1) → (seq_len, N_features)
-- n_features viene letto dinamicamente da prepare_dl_fold
-- Aggiunto TCN (Temporal Convolutional Network)
-- Aggiunto CNN-LSTM ibrido
-- SEQ_LEN aumentato da 10 a 20
-- Architettura Transformer migliorata (più heads, FFN più grande)
+Input multivariato: ogni sequenza ha shape (seq_len, n_features), con
+n_features letto dinamicamente da prepare_dl_fold (vedi feature_engine.py).
 
 Tutti i modelli restituiscono:
     (test_dates, y_true, y_pred, params)
-in scala log_return originale — compatibile con il resto del pipeline.
+in scala log_return originale — compatibile con il resto della pipeline.
 """
 
 import numpy as np
@@ -38,7 +32,7 @@ from src.feature_engine import prepare_dl_fold
 # CONFIGURAZIONE GLOBALE
 # ─────────────────────────────────────────────────────────────────────────────
 
-SEQ_LEN  = 20    # aumentato da 10 — più contesto per attention e conv layers
+SEQ_LEN  = 20    # finestra temporale — contesto per attention e conv layers
 DROPOUT  = 0.2
 EPOCHS   = 100
 PATIENCE = 10
@@ -190,12 +184,8 @@ def run_bilstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
 
 def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     """
-    Transformer con multi-head self-attention.
-    Versione migliorata rispetto alla v1:
-    - 4 heads invece di 2 (più capacità espressiva)
-    - key_dim=16 (adeguato al nuovo n_features)
-    - FFN più grande (128 invece di 64)
-    - Due blocchi di attention in sequenza
+    Transformer con multi-head self-attention: 4 head, key_dim=16,
+    due blocchi di attention in sequenza, FFN a 128 unità.
 
     L'attention mechanism permette al modello di pesare
     selettivamente i diversi step temporali nella finestra,
@@ -249,7 +239,7 @@ def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODELLO 5 — TCN (Temporal Convolutional Network)  ← NUOVO
+# MODELLO 5 — TCN (Temporal Convolutional Network)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None):
@@ -322,7 +312,7 @@ def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODELLO 6 — CNN-LSTM ibrido  ← NUOVO
+# MODELLO 6 — CNN-LSTM ibrido
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_cnn_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):

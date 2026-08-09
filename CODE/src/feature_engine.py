@@ -1,25 +1,21 @@
 """
 feature_engine.py
 -----------------
-Feature construction for ML and DL models.
-VERSIONE 2.0 — Quantitative Finance oriented.
+Costruzione delle feature per i modelli ML e DL.
 
-Cambiamenti rispetto alla versione 1.0:
-- Feature set esteso con segnali momentum, mean reversion, volatility regime
-- Cross-asset features (Gold-Silver spread, Gold-Copper ratio)
-- Input multivariato per i modelli DL: shape (seq_len, N_FEATURES) invece di (seq_len, 1)
-- Tutti i segnali costruiti con shift(1) o più → zero look-ahead garantito
+7 gruppi di feature: lag, rolling stats, momentum, mean-reversion,
+volatility regime proxy, cross-asset spread, calendar encoding ciclico.
+Tutti i segnali usano shift(1) o più → zero look-ahead garantito.
 
-Design principles invariati:
-- Features Z-scored fit on train only → no leakage
-- Target = log_return in ORIGINAL scale (mai Z-scored)
-- Compatibile con il walk-forward framework esistente
+Design:
+- Feature Z-scored, fit solo sul training di ciascun fold → no leakage
+- Target = log_return in scala originale (mai Z-scored)
+- Input DL multivariato: shape (seq_len, n_features)
 
 Riferimenti:
 - Momentum: Jegadeesh & Titman (1993), Asness et al. (2013)
 - Mean reversion: De Bondt & Thaler (1985)
 - Vol ratio come regime proxy: Ang & Timmermann (2012)
-- Cross-asset: già documentato nella tesi (correlazioni Gold-Silver 0.79)
 """
 
 import numpy as np
@@ -31,14 +27,14 @@ from sklearn.preprocessing import StandardScaler
 # CONFIGURAZIONE FEATURE
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Lag standard (invariati dalla v1)
+# Lag standard
 DEFAULT_LAGS = [1, 2, 3, 5, 10]
 
-# Rolling windows (invariate dalla v1)
-DEFAULT_ROLLING = [5, 10, 21]   # aggiunto 21 (1 mese trading)
+# Rolling windows
+DEFAULT_ROLLING = [5, 10, 21]   # 21 = 1 mese trading
 
 # Sequenza per modelli DL
-SEQ_LEN = 20   # aumentato da 10 a 20 — più contesto per attention/LSTM
+SEQ_LEN = 20   # finestra temporale — contesto sufficiente per attention/LSTM
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -54,41 +50,41 @@ def build_ml_features(df: pd.DataFrame,
 
     FEATURE GROUPS:
     ───────────────
-    Gruppo 1 — Lag features (invariato dalla v1)
+    Gruppo 1 — Lag features
         lag_1, lag_2, lag_3, lag_5, lag_10
         Catturano autocorrelazione a breve termine e momentum a brevissimo.
 
-    Gruppo 2 — Rolling statistics (esteso dalla v1)
+    Gruppo 2 — Rolling statistics
         roll_mean_5, roll_mean_10, roll_mean_21
         roll_std_5,  roll_std_10,  roll_std_21
         Media e volatilità rolling su finestre multiple.
 
-    Gruppo 3 — Momentum signals (NUOVO)
+    Gruppo 3 — Momentum signals
         mom_5:  rendimento cumulativo ultimi 5gg  (momentum settimanale)
         mom_21: rendimento cumulativo ultimi 21gg (momentum mensile)
         mom_63: rendimento cumulativo ultimi 63gg (momentum trimestrale)
         Fonte: letteratura momentum trading (Jegadeesh & Titman 1993).
         In commodity, momentum a 1-3 mesi è ampiamente documentato.
 
-    Gruppo 4 — Mean reversion signal (NUOVO)
+    Gruppo 4 — Mean reversion signal
         z_score_21: z-score del rendimento corrente rispetto alla media 21gg
         Valori estremi (>2 o <-2) segnalano potenziale mean reversion.
         Utile nei regimi stabili dove il prezzo tende a tornare alla media.
 
-    Gruppo 5 — Volatility regime proxy (NUOVO)
+    Gruppo 5 — Volatility regime proxy
         vol_ratio: rolling_std_5 / rolling_std_21
         >1 → volatilità in espansione (regime volatile in arrivo)
         <1 → volatilità in contrazione (regime stabile)
         Permette ai modelli ML di condizionarsi sul regime SENZA usare
         la classificazione regime (che usa dati futuri per i percentili).
 
-    Gruppo 6 — Cross-asset features (NUOVO, opzionale)
+    Gruppo 6 — Cross-asset features (opzionale)
         gs_spread:    Gold - Silver log-return (divergenza metalli preziosi)
         gc_spread:    Gold - Copper log-return (precious vs industrial)
         Richiedono i DataFrame degli altri asset passati come cross_asset_dfs.
         Se non disponibili, queste feature vengono saltate silenziosamente.
 
-    Gruppo 7 — Calendar features (NUOVO)
+    Gruppo 7 — Calendar features
         dow_sin, dow_cos: giorno della settimana codificato con sin/cos
         Cattura effetti calendario (Monday effect, weekend effect)
         documentati nelle commodity futures.
@@ -322,15 +318,12 @@ def prepare_dl_fold(df: pd.DataFrame,
                      cross_asset_dfs: dict = None,
                      seq_len: int = SEQ_LEN):
     """
-    Prepara sequenze sliding-window MULTIVARIATE per i modelli DL.
+    Prepara sequenze sliding-window multivariate per i modelli DL.
 
-    DIFFERENZA CHIAVE rispetto alla v1:
-    - v1: input shape (seq_len, 1)  — solo log_return
-    - v2: input shape (seq_len, N)  — log_return + momentum + z_score + ...
-
-    Questo permette ai modelli LSTM/GRU/Transformer di condizionarsi
-    su informazioni finanziariamente rilevanti ad ogni step temporale,
-    non solo sul valore grezzo del rendimento.
+    Ogni sequenza ha shape (seq_len, n_features): non solo log_return,
+    ma anche momentum, z-score, vol_ratio, cross-asset e calendar, così
+    LSTM/GRU/Transformer si condizionano su informazioni finanziariamente
+    rilevanti ad ogni step temporale, non solo sul rendimento grezzo.
 
     Z-scaler: fit su train ONLY, colonna per colonna → no leakage.
     Target: log_return next-day in scala originale (mai scalato).
@@ -407,7 +400,8 @@ def get_n_features(df: pd.DataFrame,
                     cross_asset_dfs: dict = None) -> int:
     """
     Calcola il numero di feature DL senza costruire il dataset completo.
-    Utile per definire l'input shape dei modelli prima del training.
+    Non chiamata da main.py (i modelli DL leggono n_features direttamente
+    da prepare_dl_fold) — utility per ispezionare l'input shape a parte.
     """
     feat_df = build_dl_features(df, cross_asset_dfs=cross_asset_dfs)
     return len(feat_df.columns)
@@ -416,8 +410,8 @@ def get_n_features(df: pd.DataFrame,
 def feature_summary(df: pd.DataFrame,
                      cross_asset_dfs: dict = None) -> pd.DataFrame:
     """
-    Stampa un summary delle feature costruite con statistiche descrittive.
-    Utile per debugging e per la sezione 3.2 della tesi.
+    Statistiche descrittive delle feature costruite (usata per la tabella
+    riassuntiva di Sezione 3.2 della tesi). Non è chiamata da main.py.
     """
     feat_df = build_dl_features(df, cross_asset_dfs=cross_asset_dfs)
     summary = feat_df.describe().T

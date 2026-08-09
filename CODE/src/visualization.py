@@ -204,7 +204,12 @@ def plot_heatmap(results_df: pd.DataFrame, metric: str = "RMSE",
 
 # ── 6. Model ranking ──────────────────────────────────────────────────────────
 def plot_ranking(results_df: pd.DataFrame, metric: str = "RMSE",
+                  baseline_value: float = None, baseline_label: str = None,
                   save_path: str = None):
+    """
+    baseline_value: se fornito, disegna una linea verticale tratteggiata
+    di riferimento (es. la metrica del Random Walk) sul grafico.
+    """
     ranking = (results_df.groupby("Model")[metric]
                .mean().sort_values().reset_index())
     colors  = [MODEL_COLORS.get(m, "steelblue") for m in ranking["Model"]]
@@ -218,6 +223,12 @@ def plot_ranking(results_df: pd.DataFrame, metric: str = "RMSE",
                     f"{float(val):.6f}", va="center", fontsize=9)
         except (TypeError, ValueError):
             pass
+
+    if baseline_value is not None:
+        label = baseline_label or "Baseline"
+        ax.axvline(baseline_value, color="black", linewidth=1.2,
+                   linestyle="--", label=f"{label} ({baseline_value:.6f})")
+        ax.legend(fontsize=9, loc="lower right")
 
     ax.set_xlabel(f"Mean {metric} across all assets (log-return scale)")
     ax.set_title(f"Model Ranking — Mean {metric}",
@@ -278,37 +289,6 @@ def plot_dashboard(results_df: pd.DataFrame,
 
 
 # ── 8. Regime-conditional performance ─────────────────────────────────────────
-def plot_regime_performance(regime_metrics: dict,
-                             model_name: str,
-                             asset_name: str,
-                             save_path: str = None):
-    """
-    Bar chart comparing RMSE across stable / normal / volatile regimes
-    for a single model and asset.
-
-    regime_metrics: {"stable": {"RMSE": ...}, "normal": {...}, "volatile": {...}}
-    """
-    regimes = ["stable", "normal", "volatile"]
-    colors  = {"stable": "#2166AC", "normal": "#FEE090", "volatile": "#D73027"}
-    rmse_vals = [regime_metrics.get(r, {}).get("RMSE", np.nan) for r in regimes]
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    bars = ax.bar(regimes, rmse_vals,
-                  color=[colors[r] for r in regimes],
-                  edgecolor="white", width=0.5)
-    for bar, val in zip(bars, rmse_vals):
-        if not np.isnan(val):
-            ax.text(bar.get_x() + bar.get_width()/2,
-                    val * 1.01, f"{val:.6f}",
-                    ha="center", va="bottom", fontsize=9)
-    ax.set_title(f"{asset_name} — {model_name}: RMSE by Market Regime",
-                 fontsize=12, fontweight="bold")
-    ax.set_ylabel("RMSE (log-return scale)")
-    ax.set_xlabel("Market Regime")
-    plt.tight_layout()
-    _save(fig, save_path)
-
-
 def plot_all_models_regime(regime_results: dict,
                             asset_name: str,
                             metric: str = "RMSE",
@@ -494,7 +474,7 @@ def plot_sharpe_heatmap(results_df: pd.DataFrame,
 
     plt.colorbar(im, ax=ax, label="Annualized Sharpe Ratio")
     ax.set_title("Simulated Long/Short Strategy — Annualized Sharpe Ratio\n"
-                 "(No transaction costs  |  >0 = profitable on average  |  >1 = practically good)",
+                 "(1bp transaction cost per trade  |  >0 = profitable on average  |  >1 = practically good)",
                  fontsize=13, fontweight="bold", pad=14)
     plt.tight_layout()
     _save(fig, save_path)
