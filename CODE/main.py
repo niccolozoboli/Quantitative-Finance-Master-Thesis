@@ -1,11 +1,3 @@
-"""
-main.py — Quantitative Finance Master Thesis
-
-Orchestrazione della pipeline completa: caricamento dati, walk-forward
-validation su 13 modelli, test statistici, backtesting e generazione
-di tutti i grafici e le tabelle della tesi.
-"""
-
 import numpy as np
 import pandas as pd
 import warnings
