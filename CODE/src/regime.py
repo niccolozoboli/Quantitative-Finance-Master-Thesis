@@ -4,9 +4,16 @@ regime.py
 Market regime classification for metal commodity series.
 
 Regimes defined by realized volatility (rolling 21-day std of log-returns):
-  - STABLE:   rolling_vol < 33rd percentile
+  - STABLE:   rolling_vol <= 33rd percentile
   - NORMAL:   33rd–66th percentile
   - VOLATILE: rolling_vol > 66th percentile
+
+Percentile thresholds are estimated causally via an expanding quantile
+(only observations up to and including day t), not on the full series —
+using future observations to set the threshold for day t would leak
+information not available at classification time. A minimum warm-up of
+REGIME_WARMUP observations is required before any day is classified;
+before that, the day defaults to "normal".
 """
 
 import numpy as np
@@ -14,6 +21,7 @@ import pandas as pd
 
 
 REGIME_WINDOW = 21
+REGIME_WARMUP = 63  # ~3 trading months, 3x REGIME_WINDOW
 
 
 def compute_rolling_vol(df: pd.DataFrame,
@@ -22,14 +30,16 @@ def compute_rolling_vol(df: pd.DataFrame,
 
 
 def classify_regimes(df: pd.DataFrame,
-                      window: int = REGIME_WINDOW) -> pd.Series:
+                      window: int = REGIME_WINDOW,
+                      warmup: int = REGIME_WARMUP) -> pd.Series:
     rolling_vol = compute_rolling_vol(df, window)
-    p33 = rolling_vol.quantile(0.33)
-    p66 = rolling_vol.quantile(0.66)
+    p33 = rolling_vol.expanding(min_periods=warmup).quantile(0.33)
+    p66 = rolling_vol.expanding(min_periods=warmup).quantile(0.66)
 
     regimes = pd.Series("normal", index=df.index)
-    regimes[rolling_vol <= p33] = "stable"
-    regimes[rolling_vol >  p66] = "volatile"
+    valid = p33.notna()
+    regimes[valid & (rolling_vol <= p33)] = "stable"
+    regimes[valid & (rolling_vol >  p66)] = "volatile"
     return regimes
 
 

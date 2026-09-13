@@ -16,6 +16,7 @@ import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
 
+import tensorflow as tf
 from keras.models import Sequential, Model
 from keras.layers import (
     LSTM, GRU, Bidirectional, Dense, Dropout,
@@ -38,6 +39,23 @@ EPOCHS   = 100
 PATIENCE = 10
 BATCH    = 32
 LR       = 0.001
+
+# Positional encoding (solo Transformer): con d_model = n_feat piccolo
+# (~7-11), il contributo posizionale grezzo (ampiezza [-1,1]) avrebbe peso
+# comparabile al segnale delle feature z-scored (varianza 1) sulle stesse
+# poche dimensioni. PE_ALPHA scala il termine additivo per tenere il
+# contenuto dominante pur iniettando un segnale d'ordine sistematico.
+PE_ALPHA = 0.1
+
+
+def _sinusoidal_positional_encoding(seq_len: int, d_model: int) -> np.ndarray:
+    """Positional encoding sinusoidale standard (Vaswani et al., 2017)."""
+    position = np.arange(seq_len)[:, np.newaxis]
+    div_term = np.exp(np.arange(0, d_model, 2) * -(np.log(10000.0) / d_model))
+    pe = np.zeros((seq_len, d_model), dtype=np.float32)
+    pe[:, 0::2] = np.sin(position * div_term)
+    pe[:, 1::2] = np.cos(position * div_term[:pe[:, 1::2].shape[1]])
+    return pe
 
 
 def _early_stop():
@@ -196,10 +214,16 @@ def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None):
 
     inp = Input(shape=(SEQ_LEN, n_feat))
 
+    # Positional encoding sinusoidale, scalato (PE_ALPHA) per non dominare
+    # sulle poche dimensioni delle feature z-scored — vedi commento sopra.
+    pos_encoding = tf.constant(
+        _sinusoidal_positional_encoding(SEQ_LEN, n_feat), dtype=tf.float32)
+    x = inp + PE_ALPHA * pos_encoding
+
     # Blocco 1: Multi-head attention + residual
-    attn1 = MultiHeadAttention(num_heads=4, key_dim=16)(inp, inp)
+    attn1 = MultiHeadAttention(num_heads=4, key_dim=16)(x, x)
     attn1 = Dropout(DROPOUT)(attn1)
-    x1    = LayerNormalization(epsilon=1e-6)(inp + attn1)
+    x1    = LayerNormalization(epsilon=1e-6)(x + attn1)
 
     # Feed-forward 1
     ff1 = Dense(128, activation="relu")(x1)
@@ -232,8 +256,9 @@ def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     )
 
     params = {
-        "architecture": "Transformer(heads=4,ff=128,blocks=2)->Dense(1)",
-        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT
+        "architecture": f"Transformer(heads=4,ff=128,blocks=2,PE=sinusoidal*{PE_ALPHA})->Dense(1)",
+        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
+        "pe_alpha": PE_ALPHA
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 

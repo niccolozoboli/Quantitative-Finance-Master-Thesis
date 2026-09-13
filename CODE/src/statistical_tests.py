@@ -70,13 +70,35 @@ def random_walk_forecast(y_true: np.ndarray) -> np.ndarray:
 
 # ── 2. Diebold-Mariano Test ───────────────────────────────────────────────────
 
+def _newey_west_lag(n: int) -> int:
+    """
+    Automatic HAC bandwidth (Newey & West, 1994 plug-in rule):
+        L = floor(4 * (T/100)^(2/9))
+    Data-driven lag for the long-run variance estimator, independent of the
+    forecast horizon h — it targets residual serial correlation in the loss
+    differential d_t (e.g. from volatility clustering), not MA(h-1) structure.
+    """
+    return int(np.floor(4 * (n / 100) ** (2 / 9)))
+
+
 def diebold_mariano_test(y_true: np.ndarray,
                           y_pred1: np.ndarray,
                           y_pred2: np.ndarray,
                           h: int = 1,
-                          loss: str = "mse") -> dict:
+                          loss: str = "mse",
+                          hac_lag: int = None) -> dict:
     """
-    Diebold-Mariano (1995) test for equal predictive accuracy.
+    Diebold-Mariano (1995) test for equal predictive accuracy, with a
+    Newey-West HAC long-run variance estimator (Bartlett kernel).
+
+    h        : forecast horizon (documentation only here — this pipeline's
+               forecasts are 1-step-ahead, so h=1 is correct and not used to
+               drive the variance calculation).
+    hac_lag  : number of lags L for the Newey-West correction. If None
+               (default), L is chosen automatically via _newey_west_lag(n)
+               from the sample size of this specific comparison — exposed
+               in the returned dict as "hac_lag" so it is never buried
+               inside the function and can be reported/audited externally.
     H0: equal predictive accuracy between model1 and model2.
     """
     y_true  = np.array(y_true).flatten()
@@ -102,9 +124,13 @@ def diebold_mariano_test(y_true: np.ndarray,
     n      = len(d)
     d_mean = np.mean(d)
 
-    gamma0 = np.var(d, ddof=1)
-    gammas = [np.cov(d[j:], d[:-j])[0, 1] for j in range(1, h)]
-    hac_var = gamma0 + 2 * sum(gammas) if gammas else gamma0
+    L = hac_lag if hac_lag is not None else _newey_west_lag(n)
+    gamma0  = np.var(d, ddof=1)
+    hac_var = gamma0
+    for j in range(1, L + 1):
+        gamma_j  = np.cov(d[j:], d[:-j])[0, 1]
+        w_j      = 1 - j / (L + 1)   # Bartlett kernel taper
+        hac_var += 2 * w_j * gamma_j
     hac_var = max(hac_var, 1e-12)
 
     dm_stat = d_mean / np.sqrt(hac_var / n)
@@ -118,6 +144,7 @@ def diebold_mariano_test(y_true: np.ndarray,
     return {
         "dm_statistic": round(float(dm_stat), 4),
         "p_value":      round(float(p_value), 4),
+        "hac_lag":      int(L),
         "significant":  p_value < 0.05,
         "better":       better,
         "interpretation": (
@@ -130,11 +157,13 @@ def diebold_mariano_test(y_true: np.ndarray,
 
 def dm_vs_random_walk(model_name: str,
                        y_true: np.ndarray,
-                       y_pred_model: np.ndarray) -> dict:
+                       y_pred_model: np.ndarray,
+                       hac_lag: int = None) -> dict:
     """Tests model against the random walk baseline."""
     y_true, y_pred_model = _align(y_true, y_pred_model)
     y_rw = random_walk_forecast(y_true)
-    result = diebold_mariano_test(y_true, y_pred_model, y_rw, loss="mse")
+    result = diebold_mariano_test(y_true, y_pred_model, y_rw,
+                                   loss="mse", hac_lag=hac_lag)
     result["model"]     = model_name
     result["benchmark"] = "Random Walk"
     return result
@@ -143,19 +172,28 @@ def dm_vs_random_walk(model_name: str,
 # ── 3. Summary table ──────────────────────────────────────────────────────────
 
 def build_dm_table(y_true: np.ndarray,
-                    predictions: dict) -> pd.DataFrame:
+                    predictions: dict,
+                    hac_lag: int = None) -> pd.DataFrame:
     """
     DM test summary table for all models vs random walk.
     Automatically aligns lengths — safe against ARIMA off-by-one.
+
+    hac_lag: forwarded to dm_vs_random_walk / diebold_mariano_test. None
+             (default) means each row's L is auto-computed from that row's
+             own sample size. The L actually used is always reported in the
+             "HAC Lag (L)" column — never hidden — so it can be verified and
+             cited (e.g. "L calcolato automaticamente via regola di
+             Newey-West, L=4 per T=210") directly from the saved CSV.
     """
     rows = []
     for model_name, y_pred in predictions.items():
-        result = dm_vs_random_walk(model_name, y_true, y_pred)
+        result = dm_vs_random_walk(model_name, y_true, y_pred, hac_lag=hac_lag)
         rows.append({
-            "Model":      model_name,
-            "DM Stat":    result["dm_statistic"],
-            "p-value":    result["p_value"],
-            "Sig. (5%)":  "Yes" if result["significant"] else "No",
-            "Result":     result["interpretation"]
+            "Model":       model_name,
+            "DM Stat":     result["dm_statistic"],
+            "p-value":     result["p_value"],
+            "HAC Lag (L)": result["hac_lag"],
+            "Sig. (5%)":   "Yes" if result["significant"] else "No",
+            "Result":      result["interpretation"]
         })
     return pd.DataFrame(rows).set_index("Model")

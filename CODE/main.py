@@ -3,6 +3,8 @@ import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
 
+from statsmodels.stats.multitest import multipletests
+
 from src.preprocessing     import METALS, load_and_preprocess, reconstruct_prices
 from src.walk_forward      import get_walk_forward_folds, aggregate_fold_results
 from src.utils             import compute_metrics, save_results, set_global_seed
@@ -11,7 +13,7 @@ from src.statistical_tests import (random_walk_forecast,
                                     build_dm_table,
                                     build_adf_table)
 from src.backtesting       import (run_backtest, regime_conditional_strategy,
-                                    backtest_summary_table)
+                                    backtest_summary_table, block_bootstrap_ci)
 from src.visualization     import (
     plot_returns_forecast, plot_price_comparison,
     plot_all_models_prices, plot_garch_volatility,
@@ -64,6 +66,10 @@ def run_pipeline():
 
     results_list   = []
     bt_results_all = {}
+    dm_tables_all  = {}   # accumula le dm_table per asset — la correzione di
+                           # Holm è globale sui 48 test (12 modelli × 4 asset),
+                           # quindi il salvataggio su CSV è rimandato a dopo
+                           # il loop principale (vedi sezione dedicata sotto)
 
     # ── Carica tutti gli asset prima del loop ─────────────────────────────────
     print("\nCaricamento dati...")
@@ -202,6 +208,26 @@ def run_pipeline():
                 "dates":  dates_concat,
             }
 
+        # ── Export previsioni grezze (per DM test / regime / backtest futuri) ──
+        pred_rows = []
+        for model_name, _ in MODELS:
+            if model_name not in all_true:
+                continue
+            for fi in range(len(all_dates[model_name])):
+                fold_dates = all_dates[model_name][fi]
+                fold_true  = all_true[model_name][fi]
+                fold_pred  = all_pred[model_name][fi]
+                for d, yt, yp in zip(fold_dates, fold_true, fold_pred):
+                    pred_rows.append({
+                        "Model": model_name.replace("_", " "),
+                        "Fold":  fi + 1,
+                        "Date":  d,
+                        "y_true": yt,
+                        "y_pred": yp,
+                    })
+        pred_df = pd.DataFrame(pred_rows)
+        pred_df.to_csv(f"results/predictions_{metal_name}.csv", index=False)
+
         # ── Diebold-Mariano ───────────────────────────────────────────────────
         print(f"\n  ── Diebold-Mariano ──")
         dm_preds = {
@@ -211,8 +237,11 @@ def run_pipeline():
         }
         y_true_all = concat["Random_Walk"]["y_true"]
         dm_table   = build_dm_table(y_true_all, dm_preds)
-        print(dm_table[["DM Stat", "p-value", "Sig. (5%)"]].to_string())
-        dm_table.to_csv(f"results/DM_test_{metal_name}.csv")
+        print(dm_table[["DM Stat", "p-value", "HAC Lag (L)", "Sig. (5%)"]].to_string())
+        dm_tables_all[metal_name] = dm_table
+        # Nota: il CSV viene scritto dopo il loop principale, una volta
+        # applicata la correzione di Holm globale (vedi sotto) — la colonna
+        # "Sig. Holm (5%)" richiede i p-value di tutti e 4 gli asset insieme.
 
         plot_dm_heatmap(
             dm_table, asset_name=metal_name,
@@ -250,9 +279,14 @@ def run_pipeline():
             c  = concat[model_name]
             bt = run_backtest(c["y_true"], c["y_pred"],
                               transaction_cost=0.0001)
+            bt_ci = block_bootstrap_ci(c["y_true"], c["y_pred"],
+                                       transaction_cost=0.0001,
+                                       block_length=10, n_boot=2000, seed=42)
+            bt.update(bt_ci)
             bt_results[model_name.replace("_", " ")] = bt
             print(f"    {model_name:22s}  "
-                  f"Sharpe={bt['Sharpe Ratio']:6.3f}  "
+                  f"Sharpe={bt['Sharpe Ratio']:6.3f} "
+                  f"[{bt['Sharpe CI Lower (95%)']:.2f}, {bt['Sharpe CI Upper (95%)']:.2f}]  "
                   f"DA={bt['Directional Acc.']:5.1f}%  "
                   f"MaxDD={bt['Max Drawdown (%)']:6.2f}%")
 
@@ -271,10 +305,15 @@ def run_pipeline():
                 c["y_pred"], c["dates"], regimes)
             bt_rcs = run_backtest(c["y_true"], y_pred_rcs,
                                   transaction_cost=0.0001)
+            bt_rcs_ci = block_bootstrap_ci(c["y_true"], y_pred_rcs,
+                                           transaction_cost=0.0001,
+                                           block_length=10, n_boot=2000, seed=42)
+            bt_rcs.update(bt_rcs_ci)
             rcs_results[model_name.replace("_", " ")] = bt_rcs
             print(f"    {model_name:22s} [RCS]  "
                   f"Sharpe={bt_rcs['Sharpe Ratio']:6.3f}  "
-                  f"DA={bt_rcs['Directional Acc.']:5.1f}%")
+                  f"DA={bt_rcs['Directional Acc.']:5.1f}% "
+                  f"[{bt_rcs['DA CI Lower (95%)']:.1f}, {bt_rcs['DA CI Upper (95%)']:.1f}]")
 
         rcs_df = backtest_summary_table(rcs_results)
         rcs_df.to_csv(f"results/backtest_rcs_{metal_name}.csv")
@@ -328,6 +367,55 @@ def run_pipeline():
                 asset_name=metal_name,
                 save_path=p("04_volatility_regimes",
                             f"{metal_name}_GARCH_volatility_forecast_vs_realized"))
+
+    # ── Correzione di Holm per comparazioni multiple (globale, 48 test) ────────
+    # Famiglia = tutti i confronti DM del progetto (12 modelli × 4 asset),
+    # coerente con la statistica aggregata "X/48" già usata per riportare i
+    # rifiuti DM. Non modifica DM Stat/p-value originali — aggiunge solo la
+    # colonna "Sig. Holm (5%)" prima di scrivere i CSV definitivi.
+    print(f"\n{'='*64}")
+    print("  Correzione di Holm (globale, 48 test = 12 modelli × 4 asset)")
+    print(f"{'='*64}")
+    asset_order  = list(dm_tables_all.keys())
+    rows_per_asset = [len(dm_tables_all[a]) for a in asset_order]
+    all_pvalues  = np.concatenate(
+        [dm_tables_all[a]["p-value"].values for a in asset_order])
+
+    # Guardia esplicita contro un disallineamento silenzioso: se in futuro
+    # un asset avesse un numero diverso di modelli/righe (es. un modello
+    # fallito ed escluso solo per quell'asset), il totale concatenato deve
+    # comunque coincidere con la somma delle righe delle singole dm_table —
+    # altrimenti lo split per-asset più sotto assegnerebbe la colonna Holm
+    # alle righe sbagliate senza sollevare alcun errore.
+    assert len(all_pvalues) == sum(rows_per_asset), (
+        f"Disallineamento p-value/righe: {len(all_pvalues)} p-value "
+        f"concatenati ma {sum(rows_per_asset)} righe totali nelle dm_table "
+        f"({dict(zip(asset_order, rows_per_asset))})"
+    )
+
+    reject_holm, _, _, _ = multipletests(all_pvalues, alpha=0.05, method="holm")
+
+    offset = 0
+    n_sig_raw, n_sig_holm = 0, 0
+    for asset_name, n_rows in zip(asset_order, rows_per_asset):
+        dm_table = dm_tables_all[asset_name]
+        dm_table["Sig. Holm (5%)"] = [
+            "Yes" if r else "No"
+            for r in reject_holm[offset:offset + n_rows]
+        ]
+        offset += n_rows
+        n_sig_raw  += int((dm_table["p-value"] < 0.05).sum())
+        n_sig_holm += int((dm_table["Sig. Holm (5%)"] == "Yes").sum())
+        dm_table.to_csv(f"results/DM_test_{asset_name}.csv")
+
+    assert offset == len(all_pvalues), (
+        f"Split per-asset incompleto: consumati {offset} valori su "
+        f"{len(all_pvalues)} totali dopo Holm — colonna Holm probabilmente "
+        f"disallineata per almeno un asset"
+    )
+
+    print(f"  Significativi (p-value grezzo < 0.05): {n_sig_raw}/{len(all_pvalues)}")
+    print(f"  Significativi dopo Holm (5%):          {n_sig_holm}/{len(all_pvalues)}")
 
     # ── Output finale ─────────────────────────────────────────────────────────
     results_df = save_results(results_list, path="results/metrics.csv")
@@ -384,6 +472,7 @@ def run_pipeline():
     print("    results/backtest_<asset>.csv")
     print("    results/backtest_rcs_<asset>.csv")
     print("    results/backtesting_all_assets.csv")
+    print("    results/predictions_<asset>.csv")
 
     return results_df
 

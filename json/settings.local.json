@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git gc *)",
+      "Bash(git push *)",
+      "Bash(git count-objects *)",
+      "Bash(GIT_CURL_VERBOSE=1 git push origin main)",
+      "Bash(brew --version)"
+    ]
+  }
+}
