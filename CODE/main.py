@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 import warnings
@@ -13,7 +14,8 @@ from src.statistical_tests import (random_walk_forecast,
                                     build_dm_table,
                                     build_adf_table)
 from src.backtesting       import (run_backtest, regime_conditional_strategy,
-                                    backtest_summary_table, block_bootstrap_ci)
+                                    backtest_summary_table, block_bootstrap_ci,
+                                    architecture_vs_regime_D)
 from src.visualization     import (
     plot_returns_forecast, plot_price_comparison,
     plot_all_models_prices, plot_garch_volatility,
@@ -55,10 +57,91 @@ ML_MODELS = {"Decision_Tree", "Random_Forest", "Gradient_Boosting",
 
 
 def p(folder, filename):
-    import os
     path = f"results/plots/{folder}/{filename}.png"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path
+
+
+def _resume_marker_paths(metal_name):
+    return (
+        f"results/backtest_{metal_name}.csv",
+        f"results/backtest_rcs_{metal_name}.csv",
+        f"results/predictions_{metal_name}.csv",
+    )
+
+
+def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
+    """
+    Ricostruisce, da CSV già salvati su disco, tutto ciò che le sezioni
+    finali della pipeline (ranking RMSE/Sharpe, correzione di Holm,
+    statistica D) richiedono per un asset già completato in un run
+    precedente — senza rifare training.
+
+    Fonte unica: results/predictions_<asset>.csv (Model, Fold, Date,
+    y_true, y_pred) — da lì si ricalcolano gli STESSI oggetti che il ciclo
+    live costruirebbe, richiamando le stesse identiche funzioni
+    (compute_metrics, aggregate_fold_results, build_dm_table,
+    classify_regimes), non approssimazioni. Questo garantisce risultati
+    identici a quelli di un run non interrotto, sotto lo stesso seed=42.
+
+    Nota deliberata: la dm_table viene RICALCOLATA (non riletta da
+    results/DM_test_<asset>.csv), perché quel file viene scritto solo nella
+    sezione Holm finale, dopo tutti e 4 gli asset — per un asset completato
+    ma interrotto prima di quella sezione, il file potrebbe non esistere
+    affatto o essere una versione stale di un run precedente al fix HAC.
+    Ricalcolare da predictions_<asset>.csv è sempre corretto sotto il
+    codice corrente, indipendentemente da cosa (se qualcosa) sia già su
+    disco per il DM test.
+    """
+    df      = all_dfs[metal_name]
+    regimes = classify_regimes(df)
+
+    pred_df = pd.read_csv(f"results/predictions_{metal_name}.csv",
+                          parse_dates=["Date"])
+
+    concat         = {}
+    results_list_a = []
+    for model_label, g in pred_df.groupby("Model"):
+        model_name = model_label.replace(" ", "_")
+        g = g.sort_values(["Fold", "Date"])
+
+        fold_metrics = [
+            compute_metrics(gf["y_true"].values, gf["y_pred"].values)
+            for _, gf in g.groupby("Fold")
+        ]
+        agg = aggregate_fold_results(fold_metrics)
+        results_list_a.append({"Asset": metal_name, "Model": model_label, **agg})
+
+        concat[model_name] = {
+            "y_true": g["y_true"].values,
+            "y_pred": g["y_pred"].values,
+            "dates":  pd.DatetimeIndex(g["Date"].values),
+        }
+
+    dm_preds = {
+        mn.replace("_", " "): concat[mn]["y_pred"]
+        for mn in concat if mn != "Random_Walk"
+    }
+    y_true_all = concat["Random_Walk"]["y_true"]
+    dm_table   = build_dm_table(y_true_all, dm_preds)
+
+    bt_results = pd.read_csv(
+        f"results/backtest_{metal_name}.csv", index_col="Model"
+    ).to_dict(orient="index")
+
+    asset_data_entry = {
+        "y_true":  concat["Random_Walk"]["y_true"],
+        "dates":   concat["Random_Walk"]["dates"],
+        "regimes": regimes,
+        "y_pred":  {m: concat[m]["y_pred"] for m in concat},
+    }
+
+    return {
+        "results_list": results_list_a,
+        "dm_table":     dm_table,
+        "bt_results":   bt_results,
+        "asset_data":   asset_data_entry,
+    }
 
 
 def run_pipeline():
@@ -70,6 +153,8 @@ def run_pipeline():
                            # Holm è globale sui 48 test (12 modelli × 4 asset),
                            # quindi il salvataggio su CSV è rimandato a dopo
                            # il loop principale (vedi sezione dedicata sotto)
+    asset_data     = {}   # per la statistica D (RQ3) — pooled sui 4 asset,
+                           # anche questa serve solo a fine loop
 
     # ── Carica tutti gli asset prima del loop ─────────────────────────────────
     print("\nCaricamento dati...")
@@ -93,6 +178,18 @@ def run_pipeline():
         print(f"\n{'='*64}")
         print(f"  ASSET: {metal_name}  ({ticker})")
         print(f"{'='*64}")
+
+        bt_path, rcs_path, pred_path = _resume_marker_paths(metal_name)
+        if os.path.exists(bt_path) and os.path.exists(rcs_path) and os.path.exists(pred_path):
+            print(f"  Asset già processato (trovati {bt_path}, {rcs_path}, "
+                  f"{pred_path}) — salto il training e ricostruisco i dati "
+                  f"necessari dai CSV già salvati.")
+            recon = _reconstruct_asset_from_disk(metal_name, all_dfs)
+            results_list.extend(recon["results_list"])
+            dm_tables_all[metal_name]  = recon["dm_table"]
+            bt_results_all[metal_name] = recon["bt_results"]
+            asset_data[metal_name]     = recon["asset_data"]
+            continue
 
         df = all_dfs[metal_name]
         n  = len(df)
@@ -207,6 +304,15 @@ def run_pipeline():
                 "y_pred": np.concatenate(all_pred[model_name]),
                 "dates":  dates_concat,
             }
+
+        # ── Dati per la statistica D (RQ3) — stesso riferimento Random_Walk
+        # già usato per il DM test, per coerenza tra le due sezioni ──────────
+        asset_data[metal_name] = {
+            "y_true":  concat["Random_Walk"]["y_true"],
+            "dates":   concat["Random_Walk"]["dates"],
+            "regimes": regimes,
+            "y_pred":  {m: concat[m]["y_pred"] for m in concat},
+        }
 
         # ── Export previsioni grezze (per DM test / regime / backtest futuri) ──
         pred_rows = []
@@ -417,6 +523,35 @@ def run_pipeline():
     print(f"  Significativi (p-value grezzo < 0.05): {n_sig_raw}/{len(all_pvalues)}")
     print(f"  Significativi dopo Holm (5%):          {n_sig_holm}/{len(all_pvalues)}")
 
+    # ── RQ3: statistica D (prevalenza architettura vs regime) ──────────────────
+    # Richiede i dati di tutti e 4 gli asset insieme (pooled) — vedi il design
+    # discusso: D positivo -> prevale la variabilità tra regimi a modello
+    # fissato; D negativo -> prevale la variabilità tra modelli a regime
+    # fissato. asset_data è popolato sia dal percorso live sia da quello di
+    # resume, quindi funziona identicamente indipendentemente da quali asset
+    # sono stati rieseguiti in questa run e quali ricostruiti da disco.
+    print(f"\n{'='*64}")
+    print("  RQ3 — Statistica D (architettura vs regime)")
+    print(f"{'='*64}")
+    d_result = architecture_vs_regime_D(asset_data, block_length=10, n_boot=2000,
+                                        min_obs_per_cell=5, seed=42)
+    print(f"  D = {d_result['D']:.6f}   "
+          f"CI 95% = [{d_result['D CI Lower (95%)']}, {d_result['D CI Upper (95%)']}]")
+    print(f"  N Bootstrap Used/Requested = "
+          f"{d_result['N Bootstrap Used']}/{d_result['N Bootstrap Requested']}")
+    print(f"  N Obs per Regime (pooled) = {d_result['N Obs per Regime (point estimate)']}")
+
+    pd.DataFrame([{
+        "D":                     d_result["D"],
+        "D CI Lower (95%)":      d_result["D CI Lower (95%)"],
+        "D CI Upper (95%)":      d_result["D CI Upper (95%)"],
+        "Block Length":          d_result["Block Length"],
+        "N Bootstrap Requested": d_result["N Bootstrap Requested"],
+        "N Bootstrap Used":      d_result["N Bootstrap Used"],
+        "Min Obs per Cell":      d_result["Min Obs per Cell"],
+    }]).to_csv("results/architecture_vs_regime_D.csv", index=False)
+    d_result["Sharpe by Model-Regime"].to_csv("results/sharpe_by_model_regime.csv")
+
     # ── Output finale ─────────────────────────────────────────────────────────
     results_df = save_results(results_list, path="results/metrics.csv")
     valid_df   = results_df.dropna(subset=["RMSE"])
@@ -473,6 +608,8 @@ def run_pipeline():
     print("    results/backtest_rcs_<asset>.csv")
     print("    results/backtesting_all_assets.csv")
     print("    results/predictions_<asset>.csv")
+    print("    results/architecture_vs_regime_D.csv")
+    print("    results/sharpe_by_model_regime.csv")
 
     return results_df
 
