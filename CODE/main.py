@@ -409,11 +409,13 @@ def run_pipeline():
             c          = concat[model_name]
             y_pred_rcs = regime_conditional_strategy(
                 c["y_pred"], c["dates"], regimes)
-            bt_rcs = run_backtest(c["y_true"], y_pred_rcs,
-                                  transaction_cost=0.0001)
-            bt_rcs_ci = block_bootstrap_ci(c["y_true"], y_pred_rcs,
+            bt_rcs = run_backtest(c["y_true"], c["y_pred"],
+                                  transaction_cost=0.0001,
+                                  position=y_pred_rcs)
+            bt_rcs_ci = block_bootstrap_ci(c["y_true"], c["y_pred"],
                                            transaction_cost=0.0001,
-                                           block_length=10, n_boot=2000, seed=42)
+                                           block_length=10, n_boot=2000, seed=42,
+                                           position=y_pred_rcs)
             bt_rcs.update(bt_rcs_ci)
             rcs_results[model_name.replace("_", " ")] = bt_rcs
             print(f"    {model_name:22s} [RCS]  "

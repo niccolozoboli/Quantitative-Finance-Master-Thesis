@@ -14,7 +14,8 @@ from scipy.stats import binomtest
 def run_backtest(y_true: np.ndarray,
                  y_pred: np.ndarray,
                  transaction_cost: float = 0.0001,
-                 threshold: float = 0.0) -> dict:
+                 threshold: float = 0.0,
+                 position: np.ndarray = None) -> dict:
     """
     Strategia long/short basata sul segno della previsione.
 
@@ -22,13 +23,20 @@ def run_backtest(y_true: np.ndarray,
     y_pred < -threshold → SHORT (-1)
     altrimenti          → FLAT  (0)
 
+    Se `position` è fornito, viene usato direttamente come segnale
+    (es. per la regime-conditional strategy, dove il peso di posizione
+    non è più derivabile dal segno di y_pred).
+
     transaction_cost = 1 bps (realistico per commodity futures).
     """
     y_true = np.array(y_true).flatten()
     y_pred = np.array(y_pred).flatten()
 
-    signal = np.where(y_pred >  threshold,  1.0,
-             np.where(y_pred < -threshold, -1.0, 0.0))
+    if position is not None:
+        signal = np.array(position).flatten()
+    else:
+        signal = np.where(y_pred >  threshold,  1.0,
+                 np.where(y_pred < -threshold, -1.0, 0.0))
 
     gross_pnl       = signal * y_true
     position_change = np.abs(np.diff(signal, prepend=0.0))
@@ -84,7 +92,8 @@ def block_bootstrap_ci(y_true: np.ndarray,
                         block_length: int = 10,
                         n_boot: int = 2000,
                         ci: float = 0.95,
-                        seed: int = 42) -> dict:
+                        seed: int = 42,
+                        position: np.ndarray = None) -> dict:
     """
     Moving Block Bootstrap (Kunsch, 1989) — CI al 95% per Sharpe Ratio, Max
     Drawdown e Calmar Ratio, più un test su Directional Accuracy che non
@@ -105,6 +114,8 @@ def block_bootstrap_ci(y_true: np.ndarray,
     """
     y_true = np.asarray(y_true).flatten()
     y_pred = np.asarray(y_pred).flatten()
+    if position is not None:
+        position = np.asarray(position).flatten()
     n = len(y_true)
     assert n >= block_length, (
         f"n={n} osservazioni insufficienti per block_length={block_length}"
@@ -121,7 +132,8 @@ def block_bootstrap_ci(y_true: np.ndarray,
             [np.arange(s, s + block_length) for s in starts])[:n]
         bt = run_backtest(y_true[idx], y_pred[idx],
                           transaction_cost=transaction_cost,
-                          threshold=threshold)
+                          threshold=threshold,
+                          position=position[idx] if position is not None else None)
         sharpe_boot.append(bt["Sharpe Ratio"])
         mdd_boot.append(bt["Max Drawdown (%)"])
         calmar_boot.append(bt["Calmar Ratio"])
@@ -346,7 +358,8 @@ def regime_conditional_strategy(y_pred: np.ndarray,
     scale = np.where(regime_aligned == "stable",   stable_scale,
             np.where(regime_aligned == "normal",   normal_scale,
                                                    volatile_scale))
-    return y_pred * scale
+    signal = np.where(y_pred > 0, 1.0, np.where(y_pred < 0, -1.0, 0.0))
+    return signal * scale
 
 
 def backtest_summary_table(bt_results: dict) -> pd.DataFrame:
