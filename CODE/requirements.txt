@@ -9,3 +9,4 @@ xgboost>=2.0.0
 tensorflow>=2.15.0
 keras>=2.15.0
 matplotlib>=3.8.0
+pytest>=8.0.0

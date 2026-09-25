@@ -11,15 +11,27 @@ from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.svm import SVR
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 import xgboost as xgb
 
 from src.feature_engine import prepare_ml_fold
 
 
 def _grid_search(estimator, param_grid, X_train, y_train):
+    """
+    Scaler dentro la Pipeline (non più fit una sola volta fuori dalla grid
+    search): così ciascuno dei 3 split interni di TimeSeriesSplit fitta il
+    proprio StandardScaler solo sul proprio sotto-train, senza vedere le
+    statistiche calcolate sull'intero fold esterno — zero leakage anche a
+    livello di validazione interna della grid search.
+    """
+    pipe = Pipeline([("scaler", StandardScaler()), ("model", estimator)])
+    prefixed_grid = {f"model__{k}": v for k, v in param_grid.items()}
+
     tscv = TimeSeriesSplit(n_splits=3)
     gs   = GridSearchCV(
-        estimator, param_grid, cv=tscv,
+        pipe, prefixed_grid, cv=tscv,
         scoring="neg_root_mean_squared_error",
         n_jobs=-1, verbose=0
     )

@@ -95,6 +95,11 @@ def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
     """
     df      = all_dfs[metal_name]
     regimes = classify_regimes(df)
+    # Il regime del giorno t è osservabile solo a partire da t+1 (la
+    # volatilità rolling usata da classify_regimes include r_t): per
+    # decidere la posizione sul rendimento di t si usa l'etichetta di
+    # t-1, mai quella di t stesso — vedi regimes_origin più sotto.
+    regimes_origin = regimes.shift(1).fillna("normal")
 
     pred_df = pd.read_csv(f"results/predictions_{metal_name}.csv",
                           parse_dates=["Date"])
@@ -132,7 +137,7 @@ def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
     asset_data_entry = {
         "y_true":  concat["Random_Walk"]["y_true"],
         "dates":   concat["Random_Walk"]["dates"],
-        "regimes": regimes,
+        "regimes": regimes_origin,
         "y_pred":  {m: concat[m]["y_pred"] for m in concat},
     }
 
@@ -144,7 +149,7 @@ def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
     }
 
 
-def run_pipeline():
+def run_pipeline(resume: bool = False):
     set_global_seed(42)
 
     results_list   = []
@@ -180,7 +185,12 @@ def run_pipeline():
         print(f"{'='*64}")
 
         bt_path, rcs_path, pred_path = _resume_marker_paths(metal_name)
-        if os.path.exists(bt_path) and os.path.exists(rcs_path) and os.path.exists(pred_path):
+        if resume and os.path.exists(bt_path) and os.path.exists(rcs_path) and os.path.exists(pred_path):
+            print(f"  [--resume attivo] ATTENZIONE: sto riusando CSV di una run "
+                  f"precedente — verifica che provengano dal codice corrente. "
+                  f"Dopo una correzione metodologica (feature/target, ARIMA, "
+                  f"regime, ecc.) i vecchi CSV NON sono più validi e vanno "
+                  f"rigenerati con un run senza --resume.")
             print(f"  Asset già processato (trovati {bt_path}, {rcs_path}, "
                   f"{pred_path}) — salto il training e ricostruisco i dati "
                   f"necessari dai CSV già salvati.")
@@ -204,10 +214,20 @@ def run_pipeline():
         regimes = classify_regimes(df)
         print(f"\n  Regime:\n{regime_summary(df).to_string()}")
 
+        # Grafici della volatilità: etichette NON traslate (mostrano il
+        # regime "vero" del giorno, calcolato con dati fino a quel giorno).
         plot_rolling_vol_regimes(
             df, regimes, asset_name=metal_name,
             save_path=p("04_volatility_regimes",
                         f"{metal_name}_rolling_volatility_with_regimes"))
+
+        # Per ogni uso decisionale (RCS, split_by_regime, statistica D) il
+        # regime del giorno t deve essere osservabile PRIMA di prendere
+        # posizione su r_t: classify_regimes(df) etichetta t usando la
+        # volatilità rolling che include r_t stesso (look-ahead se usata
+        # per il rendimento dello stesso giorno) — si usa quindi
+        # l'etichetta di t-1 per decidere la posizione su t.
+        regimes_origin = regimes.shift(1).fillna("normal")
 
         folds = get_walk_forward_folds(n)
         print(f"\n  Walk-forward: {len(folds)} folds × 21 giorni "
@@ -310,7 +330,7 @@ def run_pipeline():
         asset_data[metal_name] = {
             "y_true":  concat["Random_Walk"]["y_true"],
             "dates":   concat["Random_Walk"]["dates"],
-            "regimes": regimes,
+            "regimes": regimes_origin,
             "y_pred":  {m: concat[m]["y_pred"] for m in concat},
         }
 
@@ -362,7 +382,7 @@ def run_pipeline():
                 continue
             c = concat[model_name]
             splits = split_by_regime(
-                c["y_true"], c["y_pred"], c["dates"], regimes)
+                c["y_true"], c["y_pred"], c["dates"], regimes_origin)
             label = model_name.replace("_", " ")
             regime_results[label] = {}
             for regime, (yt, yp) in splits.items():
@@ -408,7 +428,7 @@ def run_pipeline():
                 continue
             c          = concat[model_name]
             y_pred_rcs = regime_conditional_strategy(
-                c["y_pred"], c["dates"], regimes)
+                c["y_pred"], c["dates"], regimes_origin)
             bt_rcs = run_backtest(c["y_true"], c["y_pred"],
                                   transaction_cost=0.0001,
                                   position=y_pred_rcs)
@@ -539,6 +559,8 @@ def run_pipeline():
                                         min_obs_per_cell=5, seed=42)
     print(f"  D = {d_result['D']:.6f}   "
           f"CI 95% = [{d_result['D CI Lower (95%)']}, {d_result['D CI Upper (95%)']}]")
+    print(f"  N Date comuni ai 4 asset (bootstrap congiunto) = "
+          f"{d_result['N Common Dates']}")
     print(f"  N Bootstrap Used/Requested = "
           f"{d_result['N Bootstrap Used']}/{d_result['N Bootstrap Requested']}")
     print(f"  N Obs per Regime (pooled) = {d_result['N Obs per Regime (point estimate)']}")
@@ -547,6 +569,7 @@ def run_pipeline():
         "D":                     d_result["D"],
         "D CI Lower (95%)":      d_result["D CI Lower (95%)"],
         "D CI Upper (95%)":      d_result["D CI Upper (95%)"],
+        "N Common Dates":        d_result["N Common Dates"],
         "Block Length":          d_result["Block Length"],
         "N Bootstrap Requested": d_result["N Bootstrap Requested"],
         "N Bootstrap Used":      d_result["N Bootstrap Used"],
@@ -617,4 +640,14 @@ def run_pipeline():
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--resume", action="store_true", default=False,
+        help="Riusa i CSV results/backtest_<asset>.csv, "
+             "backtest_rcs_<asset>.csv, predictions_<asset>.csv di una run "
+             "precedente per gli asset già completati, invece di rifare il "
+             "training. Disattivo di default: dopo una correzione "
+             "metodologica quei CSV non riflettono più il codice corrente.")
+    args = parser.parse_args()
+    run_pipeline(resume=args.resume)

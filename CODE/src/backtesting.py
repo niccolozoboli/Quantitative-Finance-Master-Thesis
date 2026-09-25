@@ -8,7 +8,34 @@ con costi di transazione.
 
 import numpy as np
 import pandas as pd
-from scipy.stats import binomtest
+from scipy.stats import binomtest, norm
+
+from src.statistical_tests import _newey_west_lag
+
+
+def _hac_mean_test(y: np.ndarray, hac_lag: int = None) -> tuple:
+    """
+    t-test HAC (Newey-West, kernel di Bartlett) per H0: E[y] = 0 — stessa
+    regola di banda automatica del test Diebold-Mariano (_newey_west_lag
+    in statistical_tests.py), riusata qui per coerenza metodologica.
+    Ritorna (t_stat, p_value).
+    """
+    y = np.asarray(y).flatten()
+    n = len(y)
+    y_mean = np.mean(y)
+
+    L       = hac_lag if hac_lag is not None else _newey_west_lag(n)
+    gamma0  = np.var(y, ddof=1)
+    hac_var = gamma0
+    for j in range(1, L + 1):
+        gamma_j  = np.cov(y[j:], y[:-j])[0, 1]
+        w_j      = 1 - j / (L + 1)   # Bartlett kernel taper
+        hac_var += 2 * w_j * gamma_j
+    hac_var = max(hac_var, 1e-12)
+
+    t_stat  = y_mean / np.sqrt(hac_var / n)
+    p_value = 2 * (1 - norm.cdf(abs(t_stat)))
+    return float(t_stat), float(p_value)
 
 
 def run_backtest(y_true: np.ndarray,
@@ -45,15 +72,23 @@ def run_backtest(y_true: np.ndarray,
 
     cumulative_pnl = np.cumsum(net_pnl)
     annual_return  = net_pnl.mean() * 252
-    annual_vol     = net_pnl.std()  * np.sqrt(252)
+    annual_vol     = net_pnl.std(ddof=1) * np.sqrt(252)
     sharpe         = annual_return / annual_vol if annual_vol > 1e-10 else 0.0
 
-    running_max  = np.maximum.accumulate(cumulative_pnl)
-    drawdown     = cumulative_pnl - running_max
-    max_drawdown = float(drawdown.min())
+    # Drawdown/Calmar sulla ricchezza composta W_t = prod_{j<=t}(1+net_pnl_j),
+    # non sulla somma cumulata — coerente con un P&L reinvestito, non un
+    # conto a leva fissa. MDD è una frazione positiva della ricchezza
+    # (1 - W_t/max_{u<=t} W_u); "Max Drawdown (%)" resta negativo per
+    # compatibilità con tabelle/grafici esistenti.
+    wealth            = np.cumprod(1.0 + net_pnl)
+    running_max_w     = np.maximum.accumulate(wealth)
+    drawdown_frac     = 1.0 - wealth / running_max_w
+    max_drawdown_frac = float(drawdown_frac.max())
 
-    calmar = (annual_return / abs(max_drawdown)
-              if abs(max_drawdown) > 1e-10 else 0.0)
+    calmar = (annual_return / max_drawdown_frac
+              if max_drawdown_frac > 1e-10 else 0.0)
+
+    mean_ret_t, mean_ret_p = _hac_mean_test(net_pnl)
 
     active_mask = signal != 0
     if active_mask.sum() > 0:
@@ -73,12 +108,14 @@ def run_backtest(y_true: np.ndarray,
         "Annual Return (%)": round(annual_return * 100, 3),
         "Annual Vol (%)":    round(annual_vol    * 100, 3),
         "Sharpe Ratio":      round(sharpe,              4),
-        "Max Drawdown (%)":  round(max_drawdown  * 100, 3),
+        "Max Drawdown (%)":  round(-max_drawdown_frac * 100, 3),
         "Calmar Ratio":      round(calmar,              4),
         "Directional Acc.":  round(da,                  2),
         "DA p-value":        round(da_pval,             4),
         "Win Rate (%)":      round(win_rate,             2),
         "Turnover":          round(turnover,             4),
+        "Mean Net Ret t-stat (HAC)": round(mean_ret_t, 4),
+        "Mean Net Ret p-value":      round(mean_ret_p, 4),
         "N Days":            len(net_pnl),
         "Cum. PnL":          cumulative_pnl,
         "Net PnL":           net_pnl
@@ -191,7 +228,7 @@ def _simple_sharpe(y_true: np.ndarray, y_pred: np.ndarray) -> float:
         return 0.0
     position = np.sign(y_pred)
     pnl      = position * y_true
-    std      = np.std(pnl)
+    std      = np.std(pnl, ddof=1)
     return float(np.mean(pnl) / std * np.sqrt(252)) if std > 1e-10 else 0.0
 
 
@@ -223,11 +260,16 @@ def architecture_vs_regime_D(asset_data: dict,
       D per-asset inaffidabile; il pooling prende in prestito osservazioni
       dagli altri asset. Nota: ogni coppia (asset, giorno) pesa allo stesso
       modo — nessuna normalizzazione per la volatilità propria dell'asset.
-    - Bootstrap: Moving Block Bootstrap (Künsch, 1989). Per ogni replica, un
-      set di blocchi viene estratto UNA VOLTA per ciascun asset e applicato
-      identicamente a tutti i modelli di quell'asset — preserva la
-      dipendenza trasversale tra strategie valutate sugli stessi rendimenti
-      realizzati (asset diversi restano indipendenti tra loro).
+    - Bootstrap: Moving Block Bootstrap (Künsch, 1989) sulle DATE COMUNI ai
+      4 asset. I 4 asset vengono prima allineati sulle date OOS presenti
+      in tutti e quattro (intersezione dei rispettivi indici — i calendari
+      di trading di Gold/Silver/Copper/Platinum non coincidono
+      perfettamente giorno per giorno). Per ogni replica viene estratta
+      UNA sola sequenza di blocchi di posizioni-data (sulle N date
+      comuni) e applicata IDENTICAMENTE a tutti gli asset e a tutti i
+      modelli — preserva la dipendenza trasversale tra strategie valutate
+      sugli stessi giorni di calendario, sia tra modelli sia tra asset
+      (non solo tra modelli come nella versione precedente per-asset).
       block_length=10, n_boot=2000: stessa configurazione e stessa
       giustificazione di block_bootstrap_ci() — riuso deliberato per
       coerenza metodologica nella tesi (b ~ T^(1/3) di Hall, Horowitz &
@@ -267,7 +309,8 @@ def architecture_vs_regime_D(asset_data: dict,
                   for m in model_names_a}
         regime_arr = data["regimes"].reindex(dates).fillna("normal").values
         prepared[asset_name] = {
-            "y_true": y_true, "y_pred": y_pred, "regime": regime_arr, "n": n_common,
+            "y_true": y_true, "y_pred": y_pred, "regime": regime_arr,
+            "dates": dates, "n": n_common,
         }
 
     model_names = sorted(set.intersection(
@@ -284,23 +327,42 @@ def architecture_vs_regime_D(asset_data: dict,
     var_m_point = S_point.var(axis=0, ddof=1)   # per regime, sugli M modelli
     D_point = float(var_g_point.mean() - var_m_point.mean())
 
-    # ── Block bootstrap congiunto (per asset, condiviso tra i modelli) ────────
-    rng    = np.random.default_rng(seed)
-    D_boot = []
+    # ── Allinea i 4 asset sulle date OOS comuni (per il bootstrap congiunto) ──
+    common_dates = None
+    for p in prepared.values():
+        common_dates = (p["dates"] if common_dates is None
+                         else common_dates.intersection(p["dates"]))
+    common_dates = common_dates.sort_values()
+    n_common     = len(common_dates)
+
+    aligned = {}
+    for asset_name, p in prepared.items():
+        pos = pd.Series(np.arange(p["n"]), index=p["dates"])
+        loc = pos.reindex(common_dates).values.astype(int)
+        aligned[asset_name] = {
+            "y_true": p["y_true"][loc],
+            "regime": p["regime"][loc],
+            "y_pred": {m: p["y_pred"][m][loc] for m in model_names},
+        }
+
+    # ── Block bootstrap congiunto sulle date comuni (un solo set di blocchi
+    # di posizioni-data per replica, applicato a tutti gli asset/modelli) ─────
+    rng       = np.random.default_rng(seed)
+    n_blocks  = int(np.ceil(n_common / block_length))
+    max_start = n_common - block_length
+    D_boot    = []
     for _ in range(n_boot):
+        starts = rng.integers(0, max_start + 1, size=n_blocks)
+        idx    = np.concatenate(
+            [np.arange(s, s + block_length) for s in starts])[:n_common]
+
         yt_parts, reg_parts = [], []
         yp_parts = {m: [] for m in model_names}
-        for p in prepared.values():
-            n         = p["n"]
-            n_blocks  = int(np.ceil(n / block_length))
-            max_start = n - block_length
-            starts    = rng.integers(0, max_start + 1, size=n_blocks)
-            idx       = np.concatenate(
-                [np.arange(s, s + block_length) for s in starts])[:n]
-            yt_parts.append(p["y_true"][idx])
-            reg_parts.append(p["regime"][idx])
+        for a in aligned.values():
+            yt_parts.append(a["y_true"][idx])
+            reg_parts.append(a["regime"][idx])
             for m in model_names:
-                yp_parts[m].append(p["y_pred"][m][idx])
+                yp_parts[m].append(a["y_pred"][m][idx])
 
         yt_b  = np.concatenate(yt_parts)
         reg_b = np.concatenate(reg_parts)
@@ -331,6 +393,7 @@ def architecture_vs_regime_D(asset_data: dict,
         "Sharpe by Model-Regime": pd.DataFrame(
             S_point, index=model_names, columns=_D_REGIMES),
         "N Obs per Regime (point estimate)": counts_point,
+        "N Common Dates":       n_common,
         "Block Length":         block_length,
         "N Bootstrap Requested": n_boot,
         "N Bootstrap Used":     n_used,
@@ -368,6 +431,7 @@ def backtest_summary_table(bt_results: dict) -> pd.DataFrame:
         "Annual Return (%)", "Annual Vol (%)", "Sharpe Ratio",
         "Max Drawdown (%)", "Calmar Ratio",
         "Directional Acc.", "DA p-value", "Win Rate (%)", "Turnover",
+        "Mean Net Ret t-stat (HAC)", "Mean Net Ret p-value",
         "Sharpe CI Lower (95%)", "Sharpe CI Upper (95%)",
         "Max Drawdown CI Lower (95%)", "Max Drawdown CI Upper (95%)",
         "Calmar CI Lower (95%)", "Calmar CI Upper (95%)",

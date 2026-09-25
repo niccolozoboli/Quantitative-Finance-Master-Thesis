@@ -23,18 +23,31 @@ def select_order(series, p_range=range(0, 4), d=0, q_range=range(0, 4)):
 
 def run_arima_fold(df: pd.DataFrame, train_idx, test_idx):
     """
-    Fits ARIMA on log_return (train), forecasts log_return (test).
-    Returns y_true and y_pred in original log_return scale.
+    Fits ARIMA on log_return (train). Order selection and parameter
+    estimation use only the training data. Test predictions are then
+    ONE-STEP-AHEAD, non-dynamic forecasts r_hat_{t+1|t}: the fitted
+    parameters are applied (not re-estimated, refit=False) to the series
+    extended through the end of the test window, and each test-day
+    prediction conditions on the actually realized log-returns up to the
+    previous day (dynamic=False) — never on the model's own prior-day
+    forecasts. Returns y_true and y_pred in original log_return scale.
     """
     series     = df["log_return"].values
     train_s    = pd.Series(series[train_idx])
     test_s     = series[test_idx]
     test_dates = df.index[test_idx]
+    n_train    = len(train_idx)
     n_test     = len(test_idx)
 
     order, aic = select_order(train_s)
     model_fit  = ARIMA(train_s, order=order).fit()
-    y_pred     = model_fit.forecast(steps=n_test).values
+
+    full_idx = np.concatenate([train_idx, test_idx])
+    full_s   = pd.Series(series[full_idx])
+    applied  = model_fit.apply(full_s, refit=False)
+    y_pred   = np.asarray(applied.get_prediction(
+        start=n_train, end=n_train + n_test - 1, dynamic=False
+    ).predicted_mean)
 
     params = {"order": order, "aic": aic}
     return test_dates, test_s, y_pred, params

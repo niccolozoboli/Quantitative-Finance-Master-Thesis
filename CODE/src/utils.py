@@ -27,12 +27,19 @@ def set_global_seed(seed: int = 42) -> None:
     Seed centralizzato — Python random, NumPy, TensorFlow.
     Va chiamato una sola volta, prima di qualsiasi training
     (sklearn, XGBoost e Keras/TensorFlow).
+
+    enable_op_determinism() forza anche i kernel GPU/CPU non
+    deterministici di TensorFlow (es. alcune riduzioni in floating point)
+    a un comportamento riproducibile bit-per-bit a parità di seed — senza,
+    tf.random.set_seed da solo non basta a garantire risultati identici
+    tra run diverse sugli stessi dati.
     """
     random.seed(seed)
     np.random.seed(seed)
     try:
         import tensorflow as tf
         tf.random.set_seed(seed)
+        tf.config.experimental.enable_op_determinism()
     except ImportError:
         pass
 
@@ -74,8 +81,8 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     # Note: no transaction costs, no slippage — upper bound on performance
     position = np.sign(y_pred)
     pnl      = position * y_true
-    if np.std(pnl) > 1e-10:
-        sharpe = float(np.mean(pnl) / np.std(pnl) * np.sqrt(252))
+    if np.std(pnl, ddof=1) > 1e-10:
+        sharpe = float(np.mean(pnl) / np.std(pnl, ddof=1) * np.sqrt(252))
     else:
         sharpe = None
 
