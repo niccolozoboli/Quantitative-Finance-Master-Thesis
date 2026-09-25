@@ -1,13 +1,13 @@
-Model,DM Stat,p-value,Sig. (5%),Result
-ARIMA,-0.984,0.3251,No,No significant difference (p=0.325)
-Decision Tree,1.049,0.2942,No,No significant difference (p=0.294)
-Random Forest,0.7153,0.4744,No,No significant difference (p=0.474)
-Gradient Boosting,1.9181,0.0551,No,No significant difference (p=0.055)
-XGBoost,1.7483,0.0804,No,No significant difference (p=0.080)
-SVR,2.0991,0.0358,Yes,Model 2 significantly better
-LSTM,-0.3048,0.7605,No,No significant difference (p=0.761)
-GRU,-0.7202,0.4714,No,No significant difference (p=0.471)
-BiLSTM,-0.4572,0.6475,No,No significant difference (p=0.647)
-Transformer,1.6569,0.0975,No,No significant difference (p=0.098)
-TCN,0.9317,0.3515,No,No significant difference (p=0.351)
-CNN LSTM,0.7837,0.4332,No,No significant difference (p=0.433)
+Model,DM Stat,p-value,HAC Lag (L),Sig. (5%),Result,Sig. Holm (5%)
+ARIMA,-0.9796,0.3273,4,No,No significant difference (p=0.327),No
+BiLSTM,-0.471,0.6377,4,No,No significant difference (p=0.638),No
+CNN LSTM,0.6804,0.4962,4,No,No significant difference (p=0.496),No
+Decision Tree,0.5915,0.5542,4,No,No significant difference (p=0.554),No
+GRU,-0.6579,0.5106,4,No,No significant difference (p=0.511),No
+Gradient Boosting,1.877,0.0605,4,No,No significant difference (p=0.061),No
+LSTM,-0.8059,0.4203,4,No,No significant difference (p=0.420),No
+Random Forest,0.5772,0.5638,4,No,No significant difference (p=0.564),No
+SVR,2.2111,0.027,4,Yes,Model 2 significantly better,No
+TCN,0.6711,0.5022,4,No,No significant difference (p=0.502),No
+Transformer,0.1726,0.8629,4,No,No significant difference (p=0.863),No
+XGBoost,1.6386,0.1013,4,No,No significant difference (p=0.101),No

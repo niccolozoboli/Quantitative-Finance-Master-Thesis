@@ -1,53 +1,53 @@
 Asset,Model,Sharpe,MaxDD,DA
+Gold,GRU,2.0546,-23.649,53.81
+Gold,XGBoost,2.049,-11.246,53.11
+Gold,Decision Tree,1.8934,-19.369,55.5
+Gold,LSTM,1.639,-20.56,53.33
+Gold,Random Forest,1.4465,-16.023,53.11
+Gold,ARIMA,1.3053,-20.945,54.76
+Gold,TCN,1.2265,-19.497,53.33
+Gold,BiLSTM,1.1079,-16.863,51.9
+Gold,CNN LSTM,1.0566,-23.743,50.95
+Gold,Gradient Boosting,1.0555,-23.023,52.15
 Gold,Random Walk,0.0,0.0,50.0
-Gold,ARIMA,1.3506,-19.82,57.14
-Gold,Decision Tree,2.2688,-17.833,58.85
-Gold,Random Forest,1.4087,-14.406,55.5
-Gold,Gradient Boosting,-0.0687,-26.584,52.63
-Gold,XGBoost,0.6131,-19.389,50.24
-Gold,SVR,-0.8928,-31.597,51.67
-Gold,LSTM,1.7147,-20.483,55.71
-Gold,GRU,1.5931,-19.063,54.29
-Gold,BiLSTM,0.9282,-16.655,52.38
-Gold,Transformer,-1.618,-44.373,42.86
-Gold,TCN,0.6618,-21.984,54.29
-Gold,CNN LSTM,0.2961,-24.477,52.38
-Silver,Random Walk,0.0,0.0,50.0
+Gold,SVR,-0.7786,-33.06,49.28
+Gold,Transformer,-1.2006,-48.824,47.62
+Silver,TCN,2.1615,-27.491,56.67
 Silver,ARIMA,1.094,-53.097,56.19
 Silver,Decision Tree,1.0499,-49.237,58.37
-Silver,Random Forest,-0.2284,-92.273,53.59
-Silver,Gradient Boosting,-0.3054,-70.923,47.85
-Silver,XGBoost,0.3604,-78.483,51.67
-Silver,SVR,0.7095,-44.906,57.42
-Silver,LSTM,-0.0918,-93.44,50.95
-Silver,GRU,-1.7733,-132.265,46.67
-Silver,BiLSTM,0.354,-50.858,50.95
-Silver,Transformer,-2.1365,-156.226,42.86
-Silver,TCN,0.6999,-56.244,55.24
-Silver,CNN LSTM,0.0867,-54.62,51.43
-Copper,Random Walk,0.0,0.0,50.0
-Copper,ARIMA,0.8936,-29.131,53.33
-Copper,Decision Tree,-1.4175,-63.192,48.8
-Copper,Random Forest,0.8208,-34.877,50.24
-Copper,Gradient Boosting,-0.4107,-44.071,46.89
-Copper,XGBoost,0.0924,-38.112,47.85
-Copper,SVR,-0.5155,-35.491,47.85
+Silver,SVR,0.7349,-44.906,57.42
+Silver,BiLSTM,0.5536,-50.858,51.43
+Silver,XGBoost,0.4397,-84.854,54.07
+Silver,LSTM,0.0398,-93.44,51.9
+Silver,Random Walk,0.0,0.0,50.0
+Silver,Gradient Boosting,-0.0319,-72.536,51.67
+Silver,Random Forest,-0.1483,-90.257,53.59
+Silver,CNN LSTM,-0.4056,-84.971,52.86
+Silver,GRU,-1.8939,-132.265,45.71
+Silver,Transformer,-2.1994,-183.645,48.1
 Copper,LSTM,1.343,-20.816,49.05
-Copper,GRU,1.1111,-26.347,50.0
-Copper,BiLSTM,-0.1769,-39.236,50.0
-Copper,Transformer,0.4409,-35.378,48.57
-Copper,TCN,1.3248,-15.697,49.52
-Copper,CNN LSTM,0.1898,-29.131,50.95
+Copper,GRU,1.0969,-23.465,50.0
+Copper,ARIMA,0.8936,-29.131,53.33
+Copper,CNN LSTM,0.618,-29.131,52.86
+Copper,Random Forest,0.3176,-47.13,48.8
+Copper,Random Walk,0.0,0.0,50.0
+Copper,Transformer,-0.1045,-38.595,49.52
+Copper,XGBoost,-0.1504,-58.386,48.33
+Copper,BiLSTM,-0.1725,-39.085,50.0
+Copper,Gradient Boosting,-0.4608,-52.122,47.37
+Copper,TCN,-0.4982,-41.552,47.14
+Copper,SVR,-0.5155,-35.491,47.85
+Copper,Decision Tree,-0.8844,-45.148,50.24
+Platinum,Transformer,1.3193,-39.383,52.86
+Platinum,BiLSTM,1.0157,-41.977,52.38
+Platinum,TCN,0.7684,-37.432,59.05
+Platinum,LSTM,0.1382,-29.328,50.95
+Platinum,SVR,0.0952,-34.878,51.67
 Platinum,Random Walk,0.0,0.0,50.0
+Platinum,CNN LSTM,-0.1046,-79.352,49.05
 Platinum,ARIMA,-0.9023,-69.064,49.52
+Platinum,GRU,-1.2542,-73.173,47.62
 Platinum,Decision Tree,-1.847,-92.503,44.5
-Platinum,Random Forest,-1.8001,-96.425,43.54
-Platinum,Gradient Boosting,-1.2547,-73.555,45.45
-Platinum,XGBoost,-2.5177,-122.986,44.98
-Platinum,SVR,0.4908,-34.878,53.11
-Platinum,LSTM,-0.0569,-29.328,50.95
-Platinum,GRU,-1.0252,-65.659,47.14
-Platinum,BiLSTM,0.5189,-41.977,51.9
-Platinum,Transformer,1.0051,-36.6,52.86
-Platinum,TCN,0.9641,-31.532,55.71
-Platinum,CNN LSTM,0.847,-60.832,51.9
+Platinum,Random Forest,-1.8984,-101.114,43.06
+Platinum,Gradient Boosting,-2.5049,-133.089,41.63
+Platinum,XGBoost,-2.6522,-129.284,43.54
