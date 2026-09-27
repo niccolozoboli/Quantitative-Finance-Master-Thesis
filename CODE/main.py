@@ -160,12 +160,18 @@ def p(folder, filename):
     return path
 
 
-def _resume_marker_paths(metal_name):
-    return (
-        f"{RESULTS_DIR}/backtest_{metal_name}.csv",
-        f"{RESULTS_DIR}/backtest_rcs_{metal_name}.csv",
-        f"{RESULTS_DIR}/predictions_{metal_name}.csv",
-    )
+def _resume_marker_path(metal_name):
+    """
+    Unico marker di "asset già completato" per --resume:
+    predictions_<asset>.csv, scritto a fine asset dal percorso live.
+    backtest_<asset>.csv/backtest_rcs_<asset>.csv NON sono più marker
+    validi — dopo B9 vengono scritti solo a fine run, dopo la correzione
+    di Holm su tutti gli asset (vedi la sezione dedicata in run_pipeline),
+    quindi non esistono ancora quando un singolo asset è "completato".
+    _reconstruct_asset_from_disk ricalcola comunque backtest, DM e
+    statistica D da predictions_<asset>.csv, senza approssimazioni.
+    """
+    return f"{RESULTS_DIR}/predictions_{metal_name}.csv"
 
 
 def _run_backtests_for_asset(concat: dict, regimes_origin: pd.Series,
@@ -359,16 +365,16 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
         print(f"  ASSET: {metal_name}  ({ticker})")
         print(f"{'='*64}")
 
-        bt_path, rcs_path, pred_path = _resume_marker_paths(metal_name)
-        if resume and os.path.exists(bt_path) and os.path.exists(rcs_path) and os.path.exists(pred_path):
+        pred_path = _resume_marker_path(metal_name)
+        if resume and os.path.exists(pred_path):
             print(f"  [--resume attivo] ATTENZIONE: sto riusando CSV di una run "
                   f"precedente — verifica che provengano dal codice corrente. "
                   f"Dopo una correzione metodologica (feature/target, ARIMA, "
                   f"regime, ecc.) i vecchi CSV NON sono più validi e vanno "
                   f"rigenerati con un run senza --resume.")
-            print(f"  Asset già processato (trovati {bt_path}, {rcs_path}, "
-                  f"{pred_path}) — salto il training e ricostruisco i dati "
-                  f"necessari dai CSV già salvati.")
+            print(f"  Asset già processato (trovato {pred_path}) — salto il "
+                  f"training e ricostruisco i dati necessari dal CSV già "
+                  f"salvato.")
             recon = _reconstruct_asset_from_disk(metal_name, all_dfs)
             results_list.extend(recon["results_list"])
             dm_tables_all[metal_name]   = recon["dm_table"]
@@ -874,9 +880,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--resume", action="store_true", default=False,
-        help="Riusa i CSV results/backtest_<asset>.csv, "
-             "backtest_rcs_<asset>.csv, predictions_<asset>.csv di una run "
-             "precedente per gli asset già completati, invece di rifare il "
+        help="Riusa results/predictions_<asset>.csv di una run precedente "
+             "per gli asset già completati (backtest/DM/statistica D "
+             "vengono ricalcolati da lì, non riletti), invece di rifare il "
              "training. Accettato solo se results/run_manifest.json esiste "
              "e riporta lo STESSO commit git di HEAD — altrimenti rifiutato "
              "(dopo una correzione metodologica quei CSV non riflettono più "
