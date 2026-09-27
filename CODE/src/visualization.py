@@ -21,7 +21,7 @@ plt.rcParams.update({
 })
 
 MODEL_COLORS = {
-    "ARIMA":             "#2166AC",
+    "ARMA":              "#2166AC",   # C1 — classe statsmodels resta ARIMA(d=0), label "ARMA"
     "Decision Tree":     "#D73027",
     "Random Forest":     "#7B3294",
     "Gradient Boosting": "#E08214",

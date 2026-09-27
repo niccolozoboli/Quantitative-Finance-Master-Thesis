@@ -25,6 +25,7 @@ from src.feature_engine import build_ml_features, get_feature_cols, prepare_dl_f
 from src.regime import classify_regimes
 from src.backtesting import run_backtest
 from src import preprocessing
+from src import metrics_econ
 
 
 def _synthetic_df(n=171, seed=None, base_value=None):
@@ -183,18 +184,30 @@ def test_d_arima_one_step_uses_realized_test_data():
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# (e) run_backtest: MDD e Calmar sulla ricchezza composta
+# (e) metrics_econ: MDD e Calmar sulla ricchezza composta (D4).
+#
+# NOTA (D1, report del relatore 7/9/2026): run_backtest ora costruisce il
+# P&L da R = exp(r)-1, non più dal log-return grezzo passato come y_true —
+# questo test storico passava [0.1,-0.5,0.2] come se fosse già la serie
+# netta y, il che non è più equivalente sotto run_backtest con w=1 fisso
+# (gross_pnl = R, non r). Il caso "MDD su y=[0.1,-0.5,0.2] = 0.5" resta
+# valido com'era pensato, ma va testato direttamente su metrics_econ (che
+# è la fonte unica di MDD/Calmar per backtest, bootstrap e statistica D —
+# vedi D4/test_report_relatore.py::test_d4_max_drawdown_known_series). La
+# copertura di run_backtest con la trasformazione R=exp(r)-1 e i costi è in
+# test_report_relatore.py::test_d1_run_backtest_manual_three_days.
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_e_run_backtest_mdd_calmar_compounded_wealth():
+def test_e_metrics_econ_mdd_calmar_compounded_wealth():
     y = np.array([0.1, -0.5, 0.2])
-    bt = run_backtest(y, y, transaction_cost=0.0,
-                       position=np.array([1.0, 1.0, 1.0]))
 
     # W = [1.1, 0.55, 0.66], picco 1.1 → MDD = 1 - 0.55/1.1 = 0.5
-    assert bt["Max Drawdown (%)"] == pytest.approx(-50.0, abs=1e-6)
-    # Calmar = mean(y)*252 / 0.5
-    assert bt["Calmar Ratio"] == pytest.approx(-33.6, abs=1e-3)
+    mdd = metrics_econ.max_drawdown(y)
+    assert mdd == pytest.approx(0.5, abs=1e-6)
+
+    # Calmar = mean(y)*252 / MDD
+    calmar = metrics_econ.calmar_ratio(y, mdd)
+    assert calmar == pytest.approx(np.mean(y) * 252 / 0.5, abs=1e-6)
 
 
 # ─────────────────────────────────────────────────────────────────────────

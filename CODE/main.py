@@ -7,7 +7,8 @@ warnings.filterwarnings("ignore")
 from statsmodels.stats.multitest import multipletests
 
 from src.preprocessing     import METALS, load_and_preprocess, reconstruct_prices
-from src.walk_forward      import get_walk_forward_folds, aggregate_fold_results
+from src.walk_forward      import (get_walk_forward_folds, aggregate_fold_results,
+                                    validate_folds, export_folds_csv)
 from src.utils             import compute_metrics, save_results, set_global_seed
 from src.regime            import classify_regimes, split_by_regime, regime_summary
 from src.statistical_tests import (random_walk_forecast,
@@ -15,7 +16,7 @@ from src.statistical_tests import (random_walk_forecast,
                                     build_adf_table)
 from src.backtesting       import (run_backtest, regime_conditional_strategy,
                                     backtest_summary_table, block_bootstrap_ci,
-                                    architecture_vs_regime_D)
+                                    architecture_vs_regime_D, estimate_alpha)
 from src.visualization     import (
     plot_returns_forecast, plot_price_comparison,
     plot_all_models_prices, plot_garch_volatility,
@@ -37,7 +38,7 @@ END   = "2026-05-01"   # aggiornato — include dati fino ad oggi
 
 MODELS = [
     ("Random_Walk",       None),
-    ("ARIMA",             run_arima_fold),
+    ("ARMA",              run_arima_fold),   # C1: label "ARMA" — classe statsmodels resta ARIMA(d=0)
     ("Decision_Tree",     run_dt_fold),
     ("Random_Forest",     run_rf_fold),
     ("Gradient_Boosting", run_gbm_fold),
@@ -70,6 +71,66 @@ def _resume_marker_paths(metal_name):
     )
 
 
+def _run_backtests_for_asset(concat: dict, regimes_origin: pd.Series,
+                              metal_name: str) -> tuple:
+    """
+    Esegue backtest statico + Regime-Conditional Strategy per tutti i
+    modelli di un asset già concatenati (concat[model_name] = {y_true,
+    y_pred, dates}) — condivisa dal percorso live e da quello di resume,
+    così i risultati sono identici indipendentemente da quali asset sono
+    stati rieseguiti in questa run e quali ricostruiti da disco (D1-D2,
+    D6). Random Walk esclusa dalla RCS (D2) e dall'alpha (D6, come da DM
+    e statistica D).
+
+    Ritorna (bt_results, rcs_results): dict {model_label: bt_dict}.
+    """
+    bt_results, rcs_results = {}, {}
+    for model_name, c in concat.items():
+        label = model_name.replace("_", " ")
+
+        bt = run_backtest(c["y_true"], c["y_pred"], dates=c["dates"],
+                          asset_name=metal_name, cost_per_side=0.0001)
+        bt_ci = block_bootstrap_ci(bt["Net PnL"], bt["Hit"], bt["Active"],
+                                   block_length=10, n_boot=2000, seed=42)
+        bt.update(bt_ci)
+        if model_name != "Random_Walk":
+            R = np.expm1(c["y_true"])
+            bt.update(estimate_alpha(bt["Net PnL"], R))
+        bt_results[label] = bt
+
+        if model_name != "Random_Walk":
+            y_pred_rcs = regime_conditional_strategy(
+                c["y_pred"], c["dates"], regimes_origin)
+            bt_rcs = run_backtest(c["y_true"], c["y_pred"], dates=c["dates"],
+                                  asset_name=metal_name, cost_per_side=0.0001,
+                                  position=y_pred_rcs)
+            bt_rcs_ci = block_bootstrap_ci(bt_rcs["Net PnL"], bt_rcs["Hit"],
+                                           bt_rcs["Active"], block_length=10,
+                                           n_boot=2000, seed=42)
+            bt_rcs.update(bt_rcs_ci)
+            R = np.expm1(c["y_true"])
+            bt_rcs.update(estimate_alpha(bt_rcs["Net PnL"], R))
+            rcs_results[label] = bt_rcs
+
+    return bt_results, rcs_results
+
+
+def _save_strategy_returns(bt_results: dict, rcs_results: dict,
+                            concat: dict, metal_name: str) -> None:
+    """D2 — serie giornaliere w (Position) e y (Net PnL), statiche e RCS."""
+    rows = []
+    for strategy_name, results in (("static", bt_results), ("rcs", rcs_results)):
+        for label, bt in results.items():
+            model_name = label.replace(" ", "_")
+            dates = concat[model_name]["dates"]
+            n = len(bt["Net PnL"])
+            for d, w, y in zip(dates[-n:], bt["Position"], bt["Net PnL"]):
+                rows.append({"Model": label, "Strategy": strategy_name,
+                            "Date": d, "w": w, "y": y})
+    pd.DataFrame(rows).to_csv(
+        f"results/strategy_returns_{metal_name}.csv", index=False)
+
+
 def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
     """
     Ricostruisce, da CSV già salvati su disco, tutto ciò che le sezioni
@@ -81,17 +142,16 @@ def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
     y_true, y_pred) — da lì si ricalcolano gli STESSI oggetti che il ciclo
     live costruirebbe, richiamando le stesse identiche funzioni
     (compute_metrics, aggregate_fold_results, build_dm_table,
-    classify_regimes), non approssimazioni. Questo garantisce risultati
-    identici a quelli di un run non interrotto, sotto lo stesso seed=42.
+    classify_regimes, _run_backtests_for_asset), non approssimazioni.
+    Questo garantisce risultati identici a quelli di un run non
+    interrotto, sotto lo stesso seed=42.
 
-    Nota deliberata: la dm_table viene RICALCOLATA (non riletta da
-    results/DM_test_<asset>.csv), perché quel file viene scritto solo nella
-    sezione Holm finale, dopo tutti e 4 gli asset — per un asset completato
-    ma interrotto prima di quella sezione, il file potrebbe non esistere
-    affatto o essere una versione stale di un run precedente al fix HAC.
-    Ricalcolare da predictions_<asset>.csv è sempre corretto sotto il
-    codice corrente, indipendentemente da cosa (se qualcosa) sia già su
-    disco per il DM test.
+    Nota deliberata: dm_table e bt_results/rcs_results vengono RICALCOLATE
+    (non rilette dai CSV di riepilogo), perché quei CSV vengono scritti
+    solo dopo la correzione di Holm finale — per un asset completato ma
+    interrotto prima di quella sezione potrebbero non esistere affatto o
+    essere una versione stale di un run precedente. Ricalcolare da
+    predictions_<asset>.csv è sempre corretto sotto il codice corrente.
     """
     df      = all_dfs[metal_name]
     regimes = classify_regimes(df)
@@ -130,21 +190,22 @@ def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
     y_true_all = concat["Random_Walk"]["y_true"]
     dm_table   = build_dm_table(y_true_all, dm_preds)
 
-    bt_results = pd.read_csv(
-        f"results/backtest_{metal_name}.csv", index_col="Model"
-    ).to_dict(orient="index")
+    bt_results, rcs_results = _run_backtests_for_asset(
+        concat, regimes_origin, metal_name)
+    _save_strategy_returns(bt_results, rcs_results, concat, metal_name)
 
     asset_data_entry = {
-        "y_true":  concat["Random_Walk"]["y_true"],
+        "y":       {m: bt["Net PnL"] for m, bt in bt_results.items()
+                    if m != "Random Walk"},
         "dates":   concat["Random_Walk"]["dates"],
         "regimes": regimes_origin,
-        "y_pred":  {m: concat[m]["y_pred"] for m in concat},
     }
 
     return {
         "results_list": results_list_a,
         "dm_table":     dm_table,
         "bt_results":   bt_results,
+        "rcs_results":  rcs_results,
         "asset_data":   asset_data_entry,
     }
 
@@ -152,14 +213,16 @@ def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
 def run_pipeline(resume: bool = False):
     set_global_seed(42)
 
-    results_list   = []
-    bt_results_all = {}
-    dm_tables_all  = {}   # accumula le dm_table per asset — la correzione di
+    results_list    = []
+    bt_results_all  = {}
+    rcs_results_all = {}
+    dm_tables_all   = {}   # accumula le dm_table per asset — la correzione di
                            # Holm è globale sui 48 test (12 modelli × 4 asset),
                            # quindi il salvataggio su CSV è rimandato a dopo
                            # il loop principale (vedi sezione dedicata sotto)
-    asset_data     = {}   # per la statistica D (RQ3) — pooled sui 4 asset,
+    asset_data      = {}   # per la statistica D (RQ3) — pooled sui 4 asset,
                            # anche questa serve solo a fine loop
+    garch_rows_all  = []   # C5 — results/garch_volatility.csv
 
     # ── Carica tutti gli asset prima del loop ─────────────────────────────────
     print("\nCaricamento dati...")
@@ -196,9 +259,10 @@ def run_pipeline(resume: bool = False):
                   f"necessari dai CSV già salvati.")
             recon = _reconstruct_asset_from_disk(metal_name, all_dfs)
             results_list.extend(recon["results_list"])
-            dm_tables_all[metal_name]  = recon["dm_table"]
-            bt_results_all[metal_name] = recon["bt_results"]
-            asset_data[metal_name]     = recon["asset_data"]
+            dm_tables_all[metal_name]   = recon["dm_table"]
+            bt_results_all[metal_name]  = recon["bt_results"]
+            rcs_results_all[metal_name] = recon["rcs_results"]
+            asset_data[metal_name]      = recon["asset_data"]
             continue
 
         df = all_dfs[metal_name]
@@ -230,6 +294,8 @@ def run_pipeline(resume: bool = False):
         regimes_origin = regimes.shift(1).fillna("normal")
 
         folds = get_walk_forward_folds(n)
+        validate_folds(folds, n)   # B1 — max(T_k) < min(E_k), |E_k|=21, E_k contigui/disgiunti
+        export_folds_csv(folds, df.index, metal_name)
         print(f"\n  Walk-forward: {len(folds)} folds × 21 giorni "
               f"= {len(folds)*21} giorni OOS\n")
 
@@ -296,6 +362,12 @@ def run_pipeline(resume: bool = False):
                 gm = compute_metrics(gr, gf)
                 print(f"    Fold {fi+1}: Vol-RMSE={gm['RMSE']:.6f}  "
                       f"persistence={gp['persistence']:.4f}")
+                garch_rows_all.append({           # C5
+                    "Asset": metal_name, "Fold": fi + 1,
+                    "alpha": gp["alpha"], "beta": gp["beta"],
+                    "persistence": gp["persistence"],
+                    "loss_RMSE": gm["RMSE"],
+                })
             except Exception as e:
                 print(f"    Fold {fi+1}: GARCH ERRORE {e}")
 
@@ -324,15 +396,6 @@ def run_pipeline(resume: bool = False):
                 "y_pred": np.concatenate(all_pred[model_name]),
                 "dates":  dates_concat,
             }
-
-        # ── Dati per la statistica D (RQ3) — stesso riferimento Random_Walk
-        # già usato per il DM test, per coerenza tra le due sezioni ──────────
-        asset_data[metal_name] = {
-            "y_true":  concat["Random_Walk"]["y_true"],
-            "dates":   concat["Random_Walk"]["dates"],
-            "regimes": regimes_origin,
-            "y_pred":  {m: concat[m]["y_pred"] for m in concat},
-        }
 
         # ── Export previsioni grezze (per DM test / regime / backtest futuri) ──
         pred_rows = []
@@ -396,55 +459,45 @@ def run_pipeline(resume: bool = False):
             save_path=p("05_regime_performance",
                         f"{metal_name}_RMSE_by_regime_all_models"))
 
-        # ── BACKTESTING ───────────────────────────────────────────────────────
-        print(f"\n  ── Backtesting ──")
-        bt_results = {}
+        # ── BACKTESTING (statico + Regime-Conditional Strategy) ────────────────
+        # D1-D2: y = w*R - c|Δw| - 2c|w|*1{roll}, R = exp(r)-1, cost_per_side=c.
+        # D2: Random Walk esclusa dal loop RCS (posizione RW sempre nulla,
+        # RCS su RW sarebbe identica alla statica) — vedi _run_backtests_for_asset.
+        print(f"\n  ── Backtesting (statico + RCS) ──")
+        bt_results, rcs_results = _run_backtests_for_asset(
+            concat, regimes_origin, metal_name)
         for model_name, _ in MODELS:
-            if model_name not in concat:
+            label = model_name.replace("_", " ")
+            if label not in bt_results:
                 continue
-            c  = concat[model_name]
-            bt = run_backtest(c["y_true"], c["y_pred"],
-                              transaction_cost=0.0001)
-            bt_ci = block_bootstrap_ci(c["y_true"], c["y_pred"],
-                                       transaction_cost=0.0001,
-                                       block_length=10, n_boot=2000, seed=42)
-            bt.update(bt_ci)
-            bt_results[model_name.replace("_", " ")] = bt
+            bt = bt_results[label]
             print(f"    {model_name:22s}  "
                   f"Sharpe={bt['Sharpe Ratio']:6.3f} "
                   f"[{bt['Sharpe CI Lower (95%)']:.2f}, {bt['Sharpe CI Upper (95%)']:.2f}]  "
                   f"DA={bt['Directional Acc.']:5.1f}%  "
-                  f"MaxDD={bt['Max Drawdown (%)']:6.2f}%")
+                  f"MaxDD={bt['Max Drawdown (%)']:6.2f}%  "
+                  f"RollDays={bt['N Roll Days']}")
+            if label in rcs_results:
+                bt_rcs = rcs_results[label]
+                print(f"    {model_name:22s} [RCS]  "
+                      f"Sharpe={bt_rcs['Sharpe Ratio']:6.3f}  "
+                      f"DA={bt_rcs['Directional Acc.']:5.1f}% "
+                      f"[{bt_rcs['DA CI Lower (95%)']:.1f}, {bt_rcs['DA CI Upper (95%)']:.1f}]")
 
-        bt_df = backtest_summary_table(bt_results)
-        bt_df.to_csv(f"results/backtest_{metal_name}.csv")
-        bt_results_all[metal_name] = bt_results
+        # CSV di riepilogo (bt_df/rcs_df) rimandati a dopo la correzione di
+        # Holm globale — vedi sezione dedicata dopo il loop principale.
+        bt_results_all[metal_name]  = bt_results
+        rcs_results_all[metal_name] = rcs_results
+        _save_strategy_returns(bt_results, rcs_results, concat, metal_name)
 
-        # ── REGIME-CONDITIONAL STRATEGY ───────────────────────────────────────
-        print(f"\n  ── Regime-Conditional Strategy ──")
-        rcs_results = {}
-        for model_name, _ in MODELS:
-            if model_name not in concat:
-                continue
-            c          = concat[model_name]
-            y_pred_rcs = regime_conditional_strategy(
-                c["y_pred"], c["dates"], regimes_origin)
-            bt_rcs = run_backtest(c["y_true"], c["y_pred"],
-                                  transaction_cost=0.0001,
-                                  position=y_pred_rcs)
-            bt_rcs_ci = block_bootstrap_ci(c["y_true"], c["y_pred"],
-                                           transaction_cost=0.0001,
-                                           block_length=10, n_boot=2000, seed=42,
-                                           position=y_pred_rcs)
-            bt_rcs.update(bt_rcs_ci)
-            rcs_results[model_name.replace("_", " ")] = bt_rcs
-            print(f"    {model_name:22s} [RCS]  "
-                  f"Sharpe={bt_rcs['Sharpe Ratio']:6.3f}  "
-                  f"DA={bt_rcs['Directional Acc.']:5.1f}% "
-                  f"[{bt_rcs['DA CI Lower (95%)']:.1f}, {bt_rcs['DA CI Upper (95%)']:.1f}]")
-
-        rcs_df = backtest_summary_table(rcs_results)
-        rcs_df.to_csv(f"results/backtest_rcs_{metal_name}.csv")
+        # ── Dati per la statistica D (RQ3, D7) — serie y NETTA della
+        # strategia statica, già calcolata sopra, mai ricalcolata ──────────
+        asset_data[metal_name] = {
+            "y":       {m: bt["Net PnL"] for m, bt in bt_results.items()
+                        if m != "Random Walk"},
+            "dates":   concat["Random_Walk"]["dates"],
+            "regimes": regimes_origin,
+        }
 
         # ── Plot individuali ──────────────────────────────────────────────────
         model_pred_prices = {}
@@ -496,54 +549,90 @@ def run_pipeline(resume: bool = False):
                 save_path=p("04_volatility_regimes",
                             f"{metal_name}_GARCH_volatility_forecast_vs_realized"))
 
-    # ── Correzione di Holm per comparazioni multiple (globale, 48 test) ────────
-    # Famiglia = tutti i confronti DM del progetto (12 modelli × 4 asset),
-    # coerente con la statistica aggregata "X/48" già usata per riportare i
-    # rifiuti DM. Non modifica DM Stat/p-value originali — aggiunge solo la
-    # colonna "Sig. Holm (5%)" prima di scrivere i CSV definitivi.
+    # ── C5: GARCH volatility CSV ────────────────────────────────────────────────
+    pd.DataFrame(garch_rows_all).to_csv("results/garch_volatility.csv", index=False)
+
+    # ── B9: Correzione di Holm — 5 famiglie indipendenti di 48 test ognuna
+    # (12 modelli × 4 asset, Random Walk esclusa ovunque): (a) DM, (b) alpha
+    # statica, (c) alpha RCS, (d) DA bootstrap statica, (e) DA bootstrap RCS.
+    # Ogni famiglia è corretta separatamente (non un'unica famiglia da 240
+    # test) — sono ipotesi scientificamente distinte (accuratezza predittiva,
+    # valore economico, direzionalità), ognuna riportata come propria
+    # tabella in tesi. p-value aggiustati salvati per intero (colonna
+    # "p Holm"), non solo Sì/No.
     print(f"\n{'='*64}")
-    print("  Correzione di Holm (globale, 48 test = 12 modelli × 4 asset)")
+    print("  Correzione di Holm (5 famiglie x 48 test = 12 modelli x 4 asset)")
     print(f"{'='*64}")
-    asset_order  = list(dm_tables_all.keys())
-    rows_per_asset = [len(dm_tables_all[a]) for a in asset_order]
-    all_pvalues  = np.concatenate(
-        [dm_tables_all[a]["p-value"].values for a in asset_order])
 
-    # Guardia esplicita contro un disallineamento silenzioso: se in futuro
-    # un asset avesse un numero diverso di modelli/righe (es. un modello
-    # fallito ed escluso solo per quell'asset), il totale concatenato deve
-    # comunque coincidere con la somma delle righe delle singole dm_table —
-    # altrimenti lo split per-asset più sotto assegnerebbe la colonna Holm
-    # alle righe sbagliate senza sollevare alcun errore.
-    assert len(all_pvalues) == sum(rows_per_asset), (
-        f"Disallineamento p-value/righe: {len(all_pvalues)} p-value "
-        f"concatenati ma {sum(rows_per_asset)} righe totali nelle dm_table "
-        f"({dict(zip(asset_order, rows_per_asset))})"
-    )
+    def _holm_correct(pvalues_by_asset: dict) -> dict:
+        """
+        pvalues_by_asset: {asset: {model_label: p_value}}.
+        Ritorna {asset: {model_label: (p_holm, sig_bool)}} — correzione di
+        Holm globale sui valori concatenati, con verifica esplicita che
+        nessun valore vada perso/disallineato nello split per-asset.
+        """
+        asset_order = list(pvalues_by_asset.keys())
+        model_order = {a: list(pvalues_by_asset[a].keys()) for a in asset_order}
+        flat = np.concatenate([
+            [pvalues_by_asset[a][m] for m in model_order[a]] for a in asset_order
+        ])
+        reject, p_holm, _, _ = multipletests(flat, alpha=0.05, method="holm")
 
-    reject_holm, _, _, _ = multipletests(all_pvalues, alpha=0.05, method="holm")
+        out, offset = {}, 0
+        for a in asset_order:
+            out[a] = {}
+            for m in model_order[a]:
+                out[a][m] = (float(p_holm[offset]), bool(reject[offset]))
+                offset += 1
+        assert offset == len(flat), (
+            f"Split per-asset incompleto: consumati {offset} valori su "
+            f"{len(flat)} totali dopo Holm"
+        )
+        return out, len(flat)
 
-    offset = 0
-    n_sig_raw, n_sig_holm = 0, 0
-    for asset_name, n_rows in zip(asset_order, rows_per_asset):
-        dm_table = dm_tables_all[asset_name]
+    # (a) DM
+    asset_order = list(dm_tables_all.keys())
+    dm_pvalues = {a: dm_tables_all[a]["p-value"].to_dict() for a in asset_order}
+    dm_holm, n_dm = _holm_correct(dm_pvalues)
+    n_sig_raw = n_sig_holm = 0
+    for a in asset_order:
+        dm_table = dm_tables_all[a]
+        dm_table["p Holm"] = [dm_holm[a][m][0] for m in dm_table.index]
         dm_table["Sig. Holm (5%)"] = [
-            "Yes" if r else "No"
-            for r in reject_holm[offset:offset + n_rows]
-        ]
-        offset += n_rows
+            "Yes" if dm_holm[a][m][1] else "No" for m in dm_table.index]
         n_sig_raw  += int((dm_table["p-value"] < 0.05).sum())
         n_sig_holm += int((dm_table["Sig. Holm (5%)"] == "Yes").sum())
-        dm_table.to_csv(f"results/DM_test_{asset_name}.csv")
+        dm_table.to_csv(f"results/DM_test_{a}.csv")
+    print(f"  (a) DM — significativi grezzi/Holm: {n_sig_raw}/{n_dm} -> {n_sig_holm}/{n_dm}")
 
-    assert offset == len(all_pvalues), (
-        f"Split per-asset incompleto: consumati {offset} valori su "
-        f"{len(all_pvalues)} totali dopo Holm — colonna Holm probabilmente "
-        f"disallineata per almeno un asset"
-    )
+    # (b)-(e): alpha statica, alpha RCS, DA bootstrap statica, DA bootstrap RCS
+    families = [
+        ("b", "Alpha p-value",        "Alpha p Holm",        "Alpha Sig. Holm (5%)",        bt_results_all),
+        ("c", "Alpha p-value",        "Alpha p Holm",        "Alpha Sig. Holm (5%)",        rcs_results_all),
+        ("d", "DA Bootstrap p-value", "DA Bootstrap p Holm",  "DA Bootstrap Sig. Holm (5%)", bt_results_all),
+        ("e", "DA Bootstrap p-value", "DA Bootstrap p Holm",  "DA Bootstrap Sig. Holm (5%)", rcs_results_all),
+    ]
+    for fam_id, src_key, holm_key, sig_key, results_all in families:
+        pvalues_by_asset = {
+            a: {m: bt[src_key] for m, bt in results_all[a].items()
+                if m != "Random Walk"}
+            for a in results_all
+        }
+        holm, n_fam = _holm_correct(pvalues_by_asset)
+        for a, per_model in holm.items():
+            for m, (p_holm, sig) in per_model.items():
+                results_all[a][m][holm_key] = p_holm
+                results_all[a][m][sig_key]  = sig
+        n_sig = sum(sig for per_model in holm.values() for _, sig in per_model.values())
+        print(f"  ({fam_id}) {src_key} [{'RCS' if results_all is rcs_results_all else 'static'}] "
+              f"— significativi dopo Holm: {n_sig}/{n_fam}")
 
-    print(f"  Significativi (p-value grezzo < 0.05): {n_sig_raw}/{len(all_pvalues)}")
-    print(f"  Significativi dopo Holm (5%):          {n_sig_holm}/{len(all_pvalues)}")
+    # ── Scrittura CSV di riepilogo backtest (ora con le colonne Holm) ──────────
+    for asset_name in bt_results_all:
+        backtest_summary_table(bt_results_all[asset_name]).to_csv(
+            f"results/backtest_{asset_name}.csv")
+        backtest_summary_table(rcs_results_all[asset_name]).to_csv(
+            f"results/backtest_rcs_{asset_name}.csv")
 
     # ── RQ3: statistica D (prevalenza architettura vs regime) ──────────────────
     # Richiede i dati di tutti e 4 gli asset insieme (pooled) — vedi il design
@@ -633,6 +722,9 @@ def run_pipeline(resume: bool = False):
     print("    results/backtest_rcs_<asset>.csv")
     print("    results/backtesting_all_assets.csv")
     print("    results/predictions_<asset>.csv")
+    print("    results/strategy_returns_<asset>.csv")
+    print("    results/folds.csv")
+    print("    results/garch_volatility.csv")
     print("    results/architecture_vs_regime_D.csv")
     print("    results/sharpe_by_model_regime.csv")
 

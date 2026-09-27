@@ -9,10 +9,10 @@ Metrics:
   - Hit Rate  : % of days where predicted direction matches actual direction
                 This is the key QF metric: does the model know if the market
                 goes up or down? A random model scores ~50%.
-  - Sharpe Ratio (simulated): annualized Sharpe of a simple long/short strategy
-                Long if predicted return > 0, Short if < 0.
-                No transaction costs (noted as limitation in thesis).
-                Sharpe > 1.0 is generally considered good in practice.
+
+D4 (report del relatore, 7/9/2026): lo Sharpe "lordo" simulato senza costi
+è stato rimosso da qui — l'unico Sharpe riportato in tesi è quello netto
+di run_backtest/metrics_econ (costi di transazione + roll inclusi).
 """
 
 import numpy as np
@@ -74,24 +74,11 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     else:
         hit_rate = None
 
-    # ── Simulated Sharpe Ratio ────────────────────────────────────────────────
-    # Strategy: go long (+1) if predicted return > 0, short (-1) if < 0
-    # Daily P&L = position × actual return
-    # Annualized Sharpe = mean(P&L) / std(P&L) × sqrt(252)
-    # Note: no transaction costs, no slippage — upper bound on performance
-    position = np.sign(y_pred)
-    pnl      = position * y_true
-    if np.std(pnl, ddof=1) > 1e-10:
-        sharpe = float(np.mean(pnl) / np.std(pnl, ddof=1) * np.sqrt(252))
-    else:
-        sharpe = None
-
     return {
         "RMSE":       round(rmse,     8),
         "MAE":        round(mae,      8),
         "MAPE":       round(mape, 4)  if mape     is not None else None,
         "Hit_Rate":   round(hit_rate, 4) if hit_rate is not None else None,
-        "Sharpe":     round(sharpe,   4) if sharpe   is not None else None,
     }
 
 
