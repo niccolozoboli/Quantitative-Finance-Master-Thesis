@@ -1,4 +1,9 @@
 import os
+import sys
+import json
+import platform
+import subprocess
+import datetime
 import numpy as np
 import pandas as pd
 import warnings
@@ -8,7 +13,7 @@ from statsmodels.stats.multitest import multipletests
 
 from src.preprocessing     import METALS, load_and_preprocess, reconstruct_prices
 from src.walk_forward      import (get_walk_forward_folds, aggregate_fold_results,
-                                    validate_folds, export_folds_csv)
+                                    validate_folds, export_folds_csv, N_FOLDS)
 from src.utils             import compute_metrics, save_results, set_global_seed
 from src.regime            import classify_regimes, split_by_regime, regime_summary
 from src.statistical_tests import (random_walk_forecast,
@@ -29,12 +34,104 @@ from src.models.arima     import run_arima_fold
 from src.models.garch     import run_garch_fold
 from src.models.ml_models import (run_rf_fold, run_xgboost_fold,
                                    run_gbm_fold, run_svr_fold, run_dt_fold)
+from src.models import dl_models
 from src.models.dl_models import (run_lstm_fold, run_gru_fold,
                                    run_bilstm_fold, run_transformer_fold,
                                    run_tcn_fold, run_cnn_lstm_fold)
 
 START = "2010-01-01"
 END   = "2026-05-01"   # aggiornato — include dati fino ad oggi
+
+# Riproducibilità/Colab: directory di output configurabile (default
+# CODE/results quando lanciato da CODE/, così sia il run locale sia quello
+# su Colab con Drive montato usano lo stesso codice — vedi colab_run.ipynb.
+RESULTS_DIR = os.environ.get("RESULTS_DIR", "results")
+
+_MANIFEST_PACKAGES = ["numpy", "pandas", "scikit-learn", "xgboost",
+                       "statsmodels", "arch", "tensorflow", "keras", "yfinance"]
+
+
+def _git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return None
+
+
+def _package_versions() -> dict:
+    from importlib import metadata
+    versions = {}
+    for pkg in _MANIFEST_PACKAGES:
+        try:
+            versions[pkg] = metadata.version(pkg)
+        except metadata.PackageNotFoundError:
+            versions[pkg] = None
+    return versions
+
+
+def _gpu_info() -> str:
+    try:
+        import tensorflow as tf
+        gpus = tf.config.list_physical_devices("GPU")
+        return [g.name for g in gpus] if gpus else "none (CPU)"
+    except Exception:
+        return "unknown"
+
+
+def _write_run_manifest(seed: int = 42, smoke: bool = False) -> dict:
+    """
+    results/run_manifest.json — commit git, versioni pacchetti, GPU,
+    versione Python, seed, data. --resume confronta il commit corrente con
+    quello salvato qui (vedi _check_resume_commit) per rifiutare un resume
+    contro CSV prodotti da un codice diverso.
+    """
+    manifest = {
+        "commit":          _git_commit(),
+        "python_version":  sys.version,
+        "platform":        platform.platform(),
+        "packages":        _package_versions(),
+        "gpu":             _gpu_info(),
+        "seed":            seed,
+        "date":            datetime.datetime.now().isoformat(),
+        "smoke":           smoke,
+    }
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with open(f"{RESULTS_DIR}/run_manifest.json", "w") as f:
+        json.dump(manifest, f, indent=2)
+    return manifest
+
+
+def _check_resume_commit() -> None:
+    """
+    --resume accetta solo CSV prodotti dallo stesso commit git salvato in
+    run_manifest.json — dopo una correzione metodologica i CSV di un
+    commit precedente non sono più validi (vedi CLAUDE.md/report del
+    relatore). Nessun manifest trovato -> resume rifiutato (run precedente
+    antecedente a questa funzionalità, provenienza non verificabile).
+    """
+    manifest_path = f"{RESULTS_DIR}/run_manifest.json"
+    if not os.path.exists(manifest_path):
+        raise RuntimeError(
+            f"--resume richiesto ma {manifest_path} non esiste: non posso "
+            f"verificare da quale commit provengano i CSV in {RESULTS_DIR}. "
+            f"Esegui senza --resume, oppure crea un manifest valido."
+        )
+    with open(manifest_path) as f:
+        old_manifest = json.load(f)
+
+    current_commit = _git_commit()
+    old_commit = old_manifest.get("commit")
+    if current_commit is None or old_commit != current_commit:
+        raise RuntimeError(
+            f"--resume rifiutato: i CSV in {RESULTS_DIR} provengono dal "
+            f"commit {old_commit!r}, ma HEAD è {current_commit!r}. Dopo una "
+            f"correzione metodologica i CSV del commit precedente non sono "
+            f"più validi — esegui senza --resume per rigenerarli."
+        )
 
 MODELS = [
     ("Random_Walk",       None),
@@ -58,16 +155,16 @@ ML_MODELS = {"Decision_Tree", "Random_Forest", "Gradient_Boosting",
 
 
 def p(folder, filename):
-    path = f"results/plots/{folder}/{filename}.png"
+    path = f"{RESULTS_DIR}/plots/{folder}/{filename}.png"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path
 
 
 def _resume_marker_paths(metal_name):
     return (
-        f"results/backtest_{metal_name}.csv",
-        f"results/backtest_rcs_{metal_name}.csv",
-        f"results/predictions_{metal_name}.csv",
+        f"{RESULTS_DIR}/backtest_{metal_name}.csv",
+        f"{RESULTS_DIR}/backtest_rcs_{metal_name}.csv",
+        f"{RESULTS_DIR}/predictions_{metal_name}.csv",
     )
 
 
@@ -128,7 +225,7 @@ def _save_strategy_returns(bt_results: dict, rcs_results: dict,
                 rows.append({"Model": label, "Strategy": strategy_name,
                             "Date": d, "w": w, "y": y})
     pd.DataFrame(rows).to_csv(
-        f"results/strategy_returns_{metal_name}.csv", index=False)
+        f"{RESULTS_DIR}/strategy_returns_{metal_name}.csv", index=False)
 
 
 def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
@@ -161,7 +258,7 @@ def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
     # t-1, mai quella di t stesso — vedi regimes_origin più sotto.
     regimes_origin = regimes.shift(1).fillna("normal")
 
-    pred_df = pd.read_csv(f"results/predictions_{metal_name}.csv",
+    pred_df = pd.read_csv(f"{RESULTS_DIR}/predictions_{metal_name}.csv",
                           parse_dates=["Date"])
 
     concat         = {}
@@ -210,8 +307,22 @@ def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
     }
 
 
-def run_pipeline(resume: bool = False):
+def run_pipeline(resume: bool = False, smoke: bool = False):
     set_global_seed(42)
+
+    if resume:
+        _check_resume_commit()
+    _write_run_manifest(seed=42, smoke=smoke)
+
+    # --smoke: 1 asset, 2 fold, 2 epoche — solo per verificare che la
+    # pipeline giri end-to-end, mai per numeri da citare in tesi.
+    metals   = dict(list(METALS.items())[:1]) if smoke else METALS
+    n_folds  = 2 if smoke else N_FOLDS
+    if smoke:
+        dl_models.EPOCHS = 2
+        print(f"\n[--smoke attivo] asset={list(metals)}  n_folds={n_folds}  "
+              f"epochs={dl_models.EPOCHS} — solo per verificare la pipeline, "
+              f"NON per numeri da citare in tesi.\n")
 
     results_list    = []
     bt_results_all  = {}
@@ -228,7 +339,7 @@ def run_pipeline(resume: bool = False):
     # ── Carica tutti gli asset prima del loop ─────────────────────────────────
     print("\nCaricamento dati...")
     all_dfs = {}
-    for metal_name, ticker in METALS.items():
+    for metal_name, ticker in metals.items():
         all_dfs[metal_name] = load_and_preprocess(
             metal_name, ticker, start=START, end=END)
         n = len(all_dfs[metal_name])
@@ -240,10 +351,10 @@ def run_pipeline(resume: bool = False):
     return_series = {m: df["log_return"].values for m, df in all_dfs.items()}
     adf_table = build_adf_table(price_series, return_series)
     print(adf_table.to_string())
-    adf_table.to_csv("results/adf_test.csv")
+    adf_table.to_csv(f"{RESULTS_DIR}/adf_test.csv")
 
     # ── Loop principale per asset ─────────────────────────────────────────────
-    for metal_name, ticker in METALS.items():
+    for metal_name, ticker in metals.items():
         print(f"\n{'='*64}")
         print(f"  ASSET: {metal_name}  ({ticker})")
         print(f"{'='*64}")
@@ -294,9 +405,9 @@ def run_pipeline(resume: bool = False):
         # l'etichetta di t-1 per decidere la posizione su t.
         regimes_origin = regimes.shift(1).fillna("normal")
 
-        folds = get_walk_forward_folds(n)
-        validate_folds(folds, n)   # B1 — max(T_k) < min(E_k), |E_k|=21, E_k contigui/disgiunti
-        export_folds_csv(folds, df.index, metal_name)
+        folds = get_walk_forward_folds(n, n_folds=n_folds)
+        validate_folds(folds, n, n_folds=n_folds)   # B1 — max(T_k) < min(E_k), |E_k|=21, E_k contigui/disgiunti
+        export_folds_csv(folds, df.index, metal_name, path=f"{RESULTS_DIR}/folds.csv")
         print(f"\n  Walk-forward: {len(folds)} folds × 21 giorni "
               f"= {len(folds)*21} giorni OOS\n")
 
@@ -423,7 +534,7 @@ def run_pipeline(resume: bool = False):
                         "y_pred": yp,
                     })
         pred_df = pd.DataFrame(pred_rows)
-        pred_df.to_csv(f"results/predictions_{metal_name}.csv", index=False)
+        pred_df.to_csv(f"{RESULTS_DIR}/predictions_{metal_name}.csv", index=False)
 
         # ── Diebold-Mariano ───────────────────────────────────────────────────
         print(f"\n  ── Diebold-Mariano ──")
@@ -558,10 +669,10 @@ def run_pipeline(resume: bool = False):
                             f"{metal_name}_GARCH_volatility_forecast_vs_realized"))
 
     # ── C5: GARCH volatility CSV ────────────────────────────────────────────────
-    pd.DataFrame(garch_rows_all).to_csv("results/garch_volatility.csv", index=False)
+    pd.DataFrame(garch_rows_all).to_csv(f"{RESULTS_DIR}/garch_volatility.csv", index=False)
 
     # ── B4: epoche migliori (e*) per fold/modello/asset DL ─────────────────────
-    pd.DataFrame(dl_epoch_rows).to_csv("results/dl_best_epochs.csv", index=False)
+    pd.DataFrame(dl_epoch_rows).to_csv(f"{RESULTS_DIR}/dl_best_epochs.csv", index=False)
 
     # ── B9: Correzione di Holm — 5 famiglie indipendenti di 48 test ognuna
     # (12 modelli × 4 asset, Random Walk esclusa ovunque): (a) DM, (b) alpha
@@ -581,13 +692,28 @@ def run_pipeline(resume: bool = False):
         Ritorna {asset: {model_label: (p_holm, sig_bool)}} — correzione di
         Holm globale sui valori concatenati, con verifica esplicita che
         nessun valore vada perso/disallineato nello split per-asset.
+
+        NaN esclusi dalla chiamata a multipletests: un p-value NaN nasce da
+        un caso degenere (es. alpha regression su una serie y a varianza
+        zero — RCS sempre flat in una finestra, tutta la varianza campionaria
+        della statistica di test è nulla, t-stat = 0/0). Verificato: senza
+        questo filtro, statsmodels.multipletests(method="holm") marca
+        `reject=True` per OGNI NaN in input, cioè "significativo" per un
+        caso in cui il test è semplicemente non definito — l'opposto della
+        conclusione corretta. Qui i NaN restano NaN e mai significativi.
         """
         asset_order = list(pvalues_by_asset.keys())
         model_order = {a: list(pvalues_by_asset[a].keys()) for a in asset_order}
         flat = np.concatenate([
             [pvalues_by_asset[a][m] for m in model_order[a]] for a in asset_order
         ])
-        reject, p_holm, _, _ = multipletests(flat, alpha=0.05, method="holm")
+
+        valid = ~np.isnan(flat)
+        p_holm = np.full_like(flat, np.nan)
+        reject = np.zeros_like(flat, dtype=bool)
+        if valid.any():
+            reject[valid], p_holm[valid], _, _ = multipletests(
+                flat[valid], alpha=0.05, method="holm")
 
         out, offset = {}, 0
         for a in asset_order:
@@ -613,7 +739,7 @@ def run_pipeline(resume: bool = False):
             "Yes" if dm_holm[a][m][1] else "No" for m in dm_table.index]
         n_sig_raw  += int((dm_table["p-value"] < 0.05).sum())
         n_sig_holm += int((dm_table["Sig. Holm (5%)"] == "Yes").sum())
-        dm_table.to_csv(f"results/DM_test_{a}.csv")
+        dm_table.to_csv(f"{RESULTS_DIR}/DM_test_{a}.csv")
     print(f"  (a) DM — significativi grezzi/Holm: {n_sig_raw}/{n_dm} -> {n_sig_holm}/{n_dm}")
 
     # (b)-(e): alpha statica, alpha RCS, DA bootstrap statica, DA bootstrap RCS
@@ -641,9 +767,9 @@ def run_pipeline(resume: bool = False):
     # ── Scrittura CSV di riepilogo backtest (ora con le colonne Holm) ──────────
     for asset_name in bt_results_all:
         backtest_summary_table(bt_results_all[asset_name]).to_csv(
-            f"results/backtest_{asset_name}.csv")
+            f"{RESULTS_DIR}/backtest_{asset_name}.csv")
         backtest_summary_table(rcs_results_all[asset_name]).to_csv(
-            f"results/backtest_rcs_{asset_name}.csv")
+            f"{RESULTS_DIR}/backtest_rcs_{asset_name}.csv")
 
     # ── RQ3: statistica D (prevalenza architettura vs regime) ──────────────────
     # Richiede i dati di tutti e 4 gli asset insieme (pooled) — vedi il design
@@ -674,11 +800,11 @@ def run_pipeline(resume: bool = False):
         "N Bootstrap Requested": d_result["N Bootstrap Requested"],
         "N Bootstrap Used":      d_result["N Bootstrap Used"],
         "Min Obs per Cell":      d_result["Min Obs per Cell"],
-    }]).to_csv("results/architecture_vs_regime_D.csv", index=False)
-    d_result["Sharpe by Model-Regime"].to_csv("results/sharpe_by_model_regime.csv")
+    }]).to_csv(f"{RESULTS_DIR}/architecture_vs_regime_D.csv", index=False)
+    d_result["Sharpe by Model-Regime"].to_csv(f"{RESULTS_DIR}/sharpe_by_model_regime.csv")
 
     # ── Output finale ─────────────────────────────────────────────────────────
-    results_df = save_results(results_list, path="results/metrics.csv")
+    results_df = save_results(results_list, path=f"{RESULTS_DIR}/metrics.csv")
     valid_df   = results_df.dropna(subset=["RMSE"])
 
     print("\n" + "="*64)
@@ -701,7 +827,7 @@ def run_pipeline(resume: bool = False):
                 "DA":     bt["Directional Acc."]
             })
     sharpe_df = pd.DataFrame(sharpe_rows)
-    sharpe_df.to_csv("results/backtesting_all_assets.csv", index=False)
+    sharpe_df.to_csv(f"{RESULTS_DIR}/backtesting_all_assets.csv", index=False)
     sharpe_ranking = (sharpe_df.groupby("Model")[["Sharpe", "MaxDD", "DA"]]
                       .mean().sort_values("Sharpe", ascending=False))
     print(sharpe_ranking.to_string())
@@ -751,7 +877,14 @@ if __name__ == "__main__":
         help="Riusa i CSV results/backtest_<asset>.csv, "
              "backtest_rcs_<asset>.csv, predictions_<asset>.csv di una run "
              "precedente per gli asset già completati, invece di rifare il "
-             "training. Disattivo di default: dopo una correzione "
-             "metodologica quei CSV non riflettono più il codice corrente.")
+             "training. Accettato solo se results/run_manifest.json esiste "
+             "e riporta lo STESSO commit git di HEAD — altrimenti rifiutato "
+             "(dopo una correzione metodologica quei CSV non riflettono più "
+             "il codice corrente).")
+    parser.add_argument(
+        "--smoke", action="store_true", default=False,
+        help="Run ridotto (1 asset, 2 fold, 2 epoche DL) per verificare che "
+             "la pipeline giri end-to-end. Da eseguire in locale — MAI per "
+             "numeri da citare in tesi.")
     args = parser.parse_args()
-    run_pipeline(resume=args.resume)
+    run_pipeline(resume=args.resume, smoke=args.smoke)

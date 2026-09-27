@@ -140,6 +140,65 @@ def test_b9_holm_matches_statsmodels_multipletests():
     np.testing.assert_allclose(p_holm_expected, p_holm_actual)
 
 
+def test_b9_holm_never_flags_nan_pvalue_as_significant():
+    """
+    Bug scoperto dal run --smoke (2026-09-27): un p-value NaN nasce da un
+    caso degenere di estimate_alpha (D6) — una serie y a varianza zero
+    (es. RCS sempre flat in una finestra con un solo regime), per cui la
+    t-stat HAC e' 0/0. statsmodels.multipletests(method="holm") su un
+    array con NaN marca reject=True per OGNI NaN — "significativo" per un
+    test non definito, l'opposto della conclusione corretta. main.py
+    (_holm_correct) filtra i NaN prima della chiamata a multipletests e li
+    lascia NaN/non significativi in output: questo test fissa quel
+    comportamento, replicando la stessa logica.
+    """
+    # Riproduzione fedele del run --smoke reale (2026-09-27, 1 asset, 2
+    # fold): tutta la famiglia "alpha RCS" era NaN (RCS sempre flat — un
+    # solo regime nella finestra OOS ridotta -> y identicamente zero per
+    # ogni modello -> t-stat HAC 0/0 per tutti e 12 i modelli).
+    flat = np.array([np.nan] * 12)
+
+    # Comportamento GREZZO di statsmodels (documentato qui per contrasto,
+    # non e' quello che main.py usa): con una famiglia interamente NaN,
+    # multipletests(method="holm") marca reject=True per OGNI elemento.
+    raw_reject, _, _, _ = multipletests(flat, alpha=0.05, method="holm")
+    assert raw_reject.all(), (
+        "questo test presume che statsmodels marchi TUTTI i NaN come "
+        "reject=True quando l'intera famiglia è NaN — se questo assert "
+        "fallisse, statsmodels potrebbe aver cambiato comportamento e il "
+        "filtro in main.py._holm_correct potrebbe non essere più necessario"
+    )
+
+    # Logica di main.py._holm_correct: filtra i NaN, non chiamare
+    # multipletests su un array vuoto se sono tutti NaN.
+    valid  = ~np.isnan(flat)
+    p_holm = np.full_like(flat, np.nan)
+    reject = np.zeros_like(flat, dtype=bool)
+    if valid.any():
+        reject[valid], p_holm[valid], _, _ = multipletests(
+            flat[valid], alpha=0.05, method="holm")
+
+    assert not reject.any(), (
+        "un p-value NaN (test non definito) non deve mai risultare "
+        "significativo dopo Holm"
+    )
+    assert np.isnan(p_holm).all()
+
+    # Caso misto: alcuni NaN, alcuni p-value validi — i validi devono
+    # comunque essere corretti normalmente, e i NaN restare non significativi.
+    mixed = np.array([np.nan, np.nan, 0.001, 0.5, 0.02, 0.9])
+    valid_m  = ~np.isnan(mixed)
+    p_holm_m = np.full_like(mixed, np.nan)
+    reject_m = np.zeros_like(mixed, dtype=bool)
+    if valid_m.any():
+        reject_m[valid_m], p_holm_m[valid_m], _, _ = multipletests(
+            mixed[valid_m], alpha=0.05, method="holm")
+
+    assert not reject_m[0] and not reject_m[1]
+    assert np.isnan(p_holm_m[0]) and np.isnan(p_holm_m[1])
+    assert reject_m[2]   # 0.001, il più piccolo dei validi -> significativo
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # B1 — assert sui fold.
 # ─────────────────────────────────────────────────────────────────────────
