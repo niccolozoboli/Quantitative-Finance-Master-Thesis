@@ -223,6 +223,7 @@ def run_pipeline(resume: bool = False):
     asset_data      = {}   # per la statistica D (RQ3) — pooled sui 4 asset,
                            # anche questa serve solo a fine loop
     garch_rows_all  = []   # C5 — results/garch_volatility.csv
+    dl_epoch_rows   = []   # B4 — results/dl_best_epochs.csv
 
     # ── Carica tutti gli asset prima del loop ─────────────────────────────────
     print("\nCaricamento dati...")
@@ -328,7 +329,14 @@ def run_pipeline(resume: bool = False):
                         else:
                             result = run_fn(df, train_idx, test_idx)
 
-                        dates, y_true_fold, y_pred, _ = result
+                        dates, y_true_fold, y_pred, run_params = result
+
+                        if model_name in DL_MODELS and "best_epoch" in run_params:
+                            dl_epoch_rows.append({          # B4
+                                "Asset": metal_name, "Model": model_name,
+                                "Fold": fi + 1,
+                                "Best Epoch": run_params["best_epoch"],
+                            })
 
                     except Exception as e:
                         print(f"    {model_name}: ERRORE {e}")
@@ -552,6 +560,9 @@ def run_pipeline(resume: bool = False):
     # ── C5: GARCH volatility CSV ────────────────────────────────────────────────
     pd.DataFrame(garch_rows_all).to_csv("results/garch_volatility.csv", index=False)
 
+    # ── B4: epoche migliori (e*) per fold/modello/asset DL ─────────────────────
+    pd.DataFrame(dl_epoch_rows).to_csv("results/dl_best_epochs.csv", index=False)
+
     # ── B9: Correzione di Holm — 5 famiglie indipendenti di 48 test ognuna
     # (12 modelli × 4 asset, Random Walk esclusa ovunque): (a) DM, (b) alpha
     # statica, (c) alpha RCS, (d) DA bootstrap statica, (e) DA bootstrap RCS.
@@ -725,6 +736,7 @@ def run_pipeline(resume: bool = False):
     print("    results/strategy_returns_<asset>.csv")
     print("    results/folds.csv")
     print("    results/garch_volatility.csv")
+    print("    results/dl_best_epochs.csv")
     print("    results/architecture_vs_regime_D.csv")
     print("    results/sharpe_by_model_regime.csv")
 

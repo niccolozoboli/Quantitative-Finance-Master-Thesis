@@ -26,6 +26,7 @@ from keras.layers import (
 )
 from keras.callbacks import EarlyStopping
 from keras.optimizers import Adam
+from keras.utils import set_random_seed
 
 from src.feature_engine import prepare_dl_fold
 
@@ -76,16 +77,53 @@ def _val_split(X, y, ratio=0.1):
 
 def _get_fold_data(df, train_idx, test_idx, cross_asset_dfs=None):
     """
-    Helper condiviso: chiama prepare_dl_fold e fa il val split.
-    Restituisce tutto quello che serve per il training.
+    Helper condiviso: chiama prepare_dl_fold. X_tr/y_tr coprono TUTTO T_k
+    (nessuno split qui — lo split 90/10 per l'early stopping è interno a
+    _train_with_refit, fase 1 di B4).
     """
-    X_tr, X_te, y_tr, y_te, dates, n_feat = prepare_dl_fold(
+    return prepare_dl_fold(
         df, train_idx, test_idx,
         cross_asset_dfs=cross_asset_dfs,
         seq_len=SEQ_LEN
     )
-    X_tr, X_val, y_tr, y_val = _val_split(X_tr, y_tr)
-    return X_tr, X_val, X_te, y_tr, y_val, y_te, dates, n_feat
+
+
+def _train_with_refit(build_fn, X_tr_full, y_tr_full, seed: int = 42,
+                       val_ratio: float = 0.1) -> tuple:
+    """
+    B4 — protocollo di training a due fasi per ogni fold/modello:
+
+    1. Split 90/10 di T_k (X_tr_full/y_tr_full): allena su primo 90% con
+       early stopping sull'ultimo 10% (patience=PATIENCE), registra
+       l'epoca migliore e* (quella di minimo val_loss).
+    2. Ricostruisce la rete (build_fn, stesso seed — keras.utils.
+       set_random_seed(42) chiamato PRIMA di ogni costruzione, sia in
+       fase 1 sia qui) e la riallena su TUTTO T_k per e* epoche, senza
+       validation.
+    3. Il chiamante prevede E_k con il modello della fase 2.
+
+    Ritorna (model_refit, e_star).
+    """
+    X_tr, X_val, y_tr, y_val = _val_split(X_tr_full, y_tr_full, ratio=val_ratio)
+
+    set_random_seed(seed)
+    model_phase1 = build_fn()
+    history = model_phase1.fit(
+        X_tr, y_tr,
+        validation_data=(X_val, y_val),
+        epochs=EPOCHS, batch_size=BATCH,
+        callbacks=[_early_stop()], verbose=0
+    )
+    val_losses = history.history["val_loss"]
+    e_star = int(np.argmin(val_losses)) + 1   # epoche da rieseguire, 1-indexed
+
+    set_random_seed(seed)
+    model_refit = build_fn()
+    model_refit.fit(
+        X_tr_full, y_tr_full,
+        epochs=e_star, batch_size=BATCH, verbose=0
+    )
+    return model_refit, e_star
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,27 +136,26 @@ def run_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     Layer 1: LSTM(64, return_sequences=True)
     Layer 2: LSTM(32, return_sequences=False)
     """
-    X_tr, X_val, X_te, y_tr, y_val, y_te, dates, n_feat = \
+    X_tr, X_te, y_tr, y_te, dates, n_feat = \
         _get_fold_data(df, train_idx, test_idx, cross_asset_dfs)
 
-    model = Sequential([
-        LSTM(64, input_shape=(SEQ_LEN, n_feat), return_sequences=True),
-        Dropout(DROPOUT),
-        LSTM(32, return_sequences=False),
-        Dropout(DROPOUT),
-        Dense(1)
-    ])
-    model.compile(optimizer=Adam(LR), loss="mse")
-    model.fit(
-        X_tr, y_tr,
-        validation_data=(X_val, y_val),
-        epochs=EPOCHS, batch_size=BATCH,
-        callbacks=[_early_stop()], verbose=0
-    )
+    def build():
+        m = Sequential([
+            LSTM(64, input_shape=(SEQ_LEN, n_feat), return_sequences=True),
+            Dropout(DROPOUT),
+            LSTM(32, return_sequences=False),
+            Dropout(DROPOUT),
+            Dense(1)
+        ])
+        m.compile(optimizer=Adam(LR), loss="mse")
+        return m
+
+    model, e_star = _train_with_refit(build, X_tr, y_tr)
 
     params = {
         "architecture": f"LSTM(64)->LSTM(32)->Dense(1)",
-        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT
+        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
+        "best_epoch": e_star,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -133,27 +170,26 @@ def run_gru_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     Preferibile quando il dataset è più piccolo o il tempo di training
     è un vincolo (es. molti fold).
     """
-    X_tr, X_val, X_te, y_tr, y_val, y_te, dates, n_feat = \
+    X_tr, X_te, y_tr, y_te, dates, n_feat = \
         _get_fold_data(df, train_idx, test_idx, cross_asset_dfs)
 
-    model = Sequential([
-        GRU(64, input_shape=(SEQ_LEN, n_feat), return_sequences=True),
-        Dropout(DROPOUT),
-        GRU(32, return_sequences=False),
-        Dropout(DROPOUT),
-        Dense(1)
-    ])
-    model.compile(optimizer=Adam(LR), loss="mse")
-    model.fit(
-        X_tr, y_tr,
-        validation_data=(X_val, y_val),
-        epochs=EPOCHS, batch_size=BATCH,
-        callbacks=[_early_stop()], verbose=0
-    )
+    def build():
+        m = Sequential([
+            GRU(64, input_shape=(SEQ_LEN, n_feat), return_sequences=True),
+            Dropout(DROPOUT),
+            GRU(32, return_sequences=False),
+            Dropout(DROPOUT),
+            Dense(1)
+        ])
+        m.compile(optimizer=Adam(LR), loss="mse")
+        return m
+
+    model, e_star = _train_with_refit(build, X_tr, y_tr)
 
     params = {
         "architecture": f"GRU(64)->GRU(32)->Dense(1)",
-        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT
+        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
+        "best_epoch": e_star,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -169,30 +205,29 @@ def run_bilstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     non accede a informazione futura — tutti i dati sono disponibili
     al momento della previsione.
     """
-    X_tr, X_val, X_te, y_tr, y_val, y_te, dates, n_feat = \
+    X_tr, X_te, y_tr, y_te, dates, n_feat = \
         _get_fold_data(df, train_idx, test_idx, cross_asset_dfs)
 
-    model = Sequential([
-        Bidirectional(
-            LSTM(64, return_sequences=True),
-            input_shape=(SEQ_LEN, n_feat)
-        ),
-        Dropout(DROPOUT),
-        Bidirectional(LSTM(32, return_sequences=False)),
-        Dropout(DROPOUT),
-        Dense(1)
-    ])
-    model.compile(optimizer=Adam(LR), loss="mse")
-    model.fit(
-        X_tr, y_tr,
-        validation_data=(X_val, y_val),
-        epochs=EPOCHS, batch_size=BATCH,
-        callbacks=[_early_stop()], verbose=0
-    )
+    def build():
+        m = Sequential([
+            Bidirectional(
+                LSTM(64, return_sequences=True),
+                input_shape=(SEQ_LEN, n_feat)
+            ),
+            Dropout(DROPOUT),
+            Bidirectional(LSTM(32, return_sequences=False)),
+            Dropout(DROPOUT),
+            Dense(1)
+        ])
+        m.compile(optimizer=Adam(LR), loss="mse")
+        return m
+
+    model, e_star = _train_with_refit(build, X_tr, y_tr)
 
     params = {
         "architecture": f"BiLSTM(64)->BiLSTM(32)->Dense(1)",
-        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT
+        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
+        "best_epoch": e_star,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -210,56 +245,55 @@ def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     selettivamente i diversi step temporali nella finestra,
     catturando dipendenze non locali che LSTM fatica a gestire.
     """
-    X_tr, X_val, X_te, y_tr, y_val, y_te, dates, n_feat = \
+    X_tr, X_te, y_tr, y_te, dates, n_feat = \
         _get_fold_data(df, train_idx, test_idx, cross_asset_dfs)
 
-    inp = Input(shape=(SEQ_LEN, n_feat))
+    def build():
+        inp = Input(shape=(SEQ_LEN, n_feat))
 
-    # Positional encoding sinusoidale, scalato (PE_ALPHA) per non dominare
-    # sulle poche dimensioni delle feature z-scored — vedi commento sopra.
-    pos_encoding = tf.constant(
-        _sinusoidal_positional_encoding(SEQ_LEN, n_feat), dtype=tf.float32)
-    x = inp + PE_ALPHA * pos_encoding
+        # Positional encoding sinusoidale, scalato (PE_ALPHA) per non
+        # dominare sulle poche dimensioni delle feature z-scored — vedi
+        # commento sopra.
+        pos_encoding = tf.constant(
+            _sinusoidal_positional_encoding(SEQ_LEN, n_feat), dtype=tf.float32)
+        x = inp + PE_ALPHA * pos_encoding
 
-    # Blocco 1: Multi-head attention + residual
-    attn1 = MultiHeadAttention(num_heads=4, key_dim=16)(x, x)
-    attn1 = Dropout(DROPOUT)(attn1)
-    x1    = LayerNormalization(epsilon=1e-6)(x + attn1)
+        # Blocco 1: Multi-head attention + residual
+        attn1 = MultiHeadAttention(num_heads=4, key_dim=16)(x, x)
+        attn1 = Dropout(DROPOUT)(attn1)
+        x1    = LayerNormalization(epsilon=1e-6)(x + attn1)
 
-    # Feed-forward 1
-    ff1 = Dense(128, activation="relu")(x1)
-    ff1 = Dense(n_feat)(ff1)
-    x1  = LayerNormalization(epsilon=1e-6)(x1 + ff1)
+        # Feed-forward 1
+        ff1 = Dense(128, activation="relu")(x1)
+        ff1 = Dense(n_feat)(ff1)
+        x1  = LayerNormalization(epsilon=1e-6)(x1 + ff1)
 
-    # Blocco 2: secondo strato di attention
-    attn2 = MultiHeadAttention(num_heads=4, key_dim=16)(x1, x1)
-    attn2 = Dropout(DROPOUT)(attn2)
-    x2    = LayerNormalization(epsilon=1e-6)(x1 + attn2)
+        # Blocco 2: secondo strato di attention
+        attn2 = MultiHeadAttention(num_heads=4, key_dim=16)(x1, x1)
+        attn2 = Dropout(DROPOUT)(attn2)
+        x2    = LayerNormalization(epsilon=1e-6)(x1 + attn2)
 
-    # Feed-forward 2
-    ff2 = Dense(128, activation="relu")(x2)
-    ff2 = Dense(n_feat)(ff2)
-    x2  = LayerNormalization(epsilon=1e-6)(x2 + ff2)
+        # Feed-forward 2
+        ff2 = Dense(128, activation="relu")(x2)
+        ff2 = Dense(n_feat)(ff2)
+        x2  = LayerNormalization(epsilon=1e-6)(x2 + ff2)
 
-    # Pooling e output
-    x2  = GlobalAveragePooling1D()(x2)
-    x2  = Dense(64, activation="relu")(x2)
-    x2  = Dropout(DROPOUT)(x2)
-    out = Dense(1)(x2)
+        # Pooling e output
+        x2  = GlobalAveragePooling1D()(x2)
+        x2  = Dense(64, activation="relu")(x2)
+        x2  = Dropout(DROPOUT)(x2)
+        out = Dense(1)(x2)
 
-    model = Model(inputs=inp, outputs=out)
-    model.compile(optimizer=Adam(LR), loss="mse")
-    model.fit(
-        X_tr, y_tr,
-        validation_data=(X_val, y_val),
-        epochs=EPOCHS, batch_size=BATCH,
-        callbacks=[_early_stop()], verbose=0
-    )
+        m = Model(inputs=inp, outputs=out)
+        m.compile(optimizer=Adam(LR), loss="mse")
+        return m
+
+    model, e_star = _train_with_refit(build, X_tr, y_tr)
 
     params = {
         "architecture": f"Transformer(heads=4,ff=128,blocks=2,PE=sinusoidal*{PE_ALPHA})->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
-        "pe_alpha": PE_ALPHA
+        "pe_alpha": PE_ALPHA, "best_epoch": e_star,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -299,50 +333,49 @@ def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     ricettivo (grazie al causal padding) copre esattamente gli ultimi 15
     passi (5-19) e nessuno prima.
     """
-    X_tr, X_val, X_te, y_tr, y_val, y_te, dates, n_feat = \
+    X_tr, X_te, y_tr, y_te, dates, n_feat = \
         _get_fold_data(df, train_idx, test_idx, cross_asset_dfs)
 
-    inp = Input(shape=(SEQ_LEN, n_feat))
+    def build():
+        inp = Input(shape=(SEQ_LEN, n_feat))
 
-    # Layer 1: dilation=1 (vede 3 step contigui)
-    x = Conv1D(64, kernel_size=3, dilation_rate=1,
-               padding="causal", activation="relu")(inp)
-    x = BatchNormalization()(x)
-    x = Dropout(DROPOUT)(x)
+        # Layer 1: dilation=1 (vede 3 step contigui)
+        x = Conv1D(64, kernel_size=3, dilation_rate=1,
+                   padding="causal", activation="relu")(inp)
+        x = BatchNormalization()(x)
+        x = Dropout(DROPOUT)(x)
 
-    # Layer 2: dilation=2 (vede 5 step effettivi)
-    x = Conv1D(64, kernel_size=3, dilation_rate=2,
-               padding="causal", activation="relu")(x)
-    x = BatchNormalization()(x)
-    x = Dropout(DROPOUT)(x)
+        # Layer 2: dilation=2 (vede 5 step effettivi)
+        x = Conv1D(64, kernel_size=3, dilation_rate=2,
+                   padding="causal", activation="relu")(x)
+        x = BatchNormalization()(x)
+        x = Dropout(DROPOUT)(x)
 
-    # Layer 3: dilation=4 (vede 9 step effettivi)
-    x = Conv1D(32, kernel_size=3, dilation_rate=4,
-               padding="causal", activation="relu")(x)
-    x = BatchNormalization()(x)
-    x = Dropout(DROPOUT)(x)
+        # Layer 3: dilation=4 (vede 9 step effettivi)
+        x = Conv1D(32, kernel_size=3, dilation_rate=4,
+                   padding="causal", activation="relu")(x)
+        x = BatchNormalization()(x)
+        x = Dropout(DROPOUT)(x)
 
-    # Uscita all'ultimo passo temporale (C7) — non GlobalAveragePooling1D,
-    # che dipenderebbe anche dai passi fuori dal campo ricettivo di 15.
-    x   = Lambda(lambda t: t[:, -1, :],
-                 output_shape=lambda s: (s[0], s[2]))(x)
-    x   = Dense(32, activation="relu")(x)
-    x   = Dropout(DROPOUT)(x)
-    out = Dense(1)(x)
+        # Uscita all'ultimo passo temporale (C7) — non
+        # GlobalAveragePooling1D, che dipenderebbe anche dai passi fuori
+        # dal campo ricettivo di 15.
+        x   = Lambda(lambda t: t[:, -1, :],
+                     output_shape=lambda s: (s[0], s[2]))(x)
+        x   = Dense(32, activation="relu")(x)
+        x   = Dropout(DROPOUT)(x)
+        out = Dense(1)(x)
 
-    model = Model(inputs=inp, outputs=out)
-    model.compile(optimizer=Adam(LR), loss="mse")
-    model.fit(
-        X_tr, y_tr,
-        validation_data=(X_val, y_val),
-        epochs=EPOCHS, batch_size=BATCH,
-        callbacks=[_early_stop()], verbose=0
-    )
+        m = Model(inputs=inp, outputs=out)
+        m.compile(optimizer=Adam(LR), loss="mse")
+        return m
+
+    model, e_star = _train_with_refit(build, X_tr, y_tr)
 
     params = {
         "architecture": "TCN(dilations=[1,2,4],kernel=3)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat,
-        "receptive_field": 15, "dropout": DROPOUT
+        "receptive_field": 15, "dropout": DROPOUT, "best_epoch": e_star,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -372,43 +405,41 @@ def run_cnn_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     la CNN comprime la rappresentazione locale,
     l'LSTM lavora su una sequenza più corta ma più ricca.
     """
-    X_tr, X_val, X_te, y_tr, y_val, y_te, dates, n_feat = \
+    X_tr, X_te, y_tr, y_te, dates, n_feat = \
         _get_fold_data(df, train_idx, test_idx, cross_asset_dfs)
 
-    model = Sequential([
-        # Strato convoluzionale — pattern locali
-        Conv1D(
-            filters=32,
-            kernel_size=3,
-            padding="causal",
-            activation="relu",
-            input_shape=(SEQ_LEN, n_feat)
-        ),
-        BatchNormalization(),
-        Dropout(DROPOUT),
+    def build():
+        m = Sequential([
+            # Strato convoluzionale — pattern locali
+            Conv1D(
+                filters=32,
+                kernel_size=3,
+                padding="causal",
+                activation="relu",
+                input_shape=(SEQ_LEN, n_feat)
+            ),
+            BatchNormalization(),
+            Dropout(DROPOUT),
 
-        # Pooling — compressione temporale
-        MaxPooling1D(pool_size=2),
+            # Pooling — compressione temporale
+            MaxPooling1D(pool_size=2),
 
-        # LSTM — dipendenze temporali sulla sequenza compressa
-        LSTM(64, return_sequences=False),
-        Dropout(DROPOUT),
+            # LSTM — dipendenze temporali sulla sequenza compressa
+            LSTM(64, return_sequences=False),
+            Dropout(DROPOUT),
 
-        # Output
-        Dense(32, activation="relu"),
-        Dense(1)
-    ])
+            # Output
+            Dense(32, activation="relu"),
+            Dense(1)
+        ])
+        m.compile(optimizer=Adam(LR), loss="mse")
+        return m
 
-    model.compile(optimizer=Adam(LR), loss="mse")
-    model.fit(
-        X_tr, y_tr,
-        validation_data=(X_val, y_val),
-        epochs=EPOCHS, batch_size=BATCH,
-        callbacks=[_early_stop()], verbose=0
-    )
+    model, e_star = _train_with_refit(build, X_tr, y_tr)
 
     params = {
         "architecture": "Conv1D(32,k=3)->MaxPool->LSTM(64)->Dense(1)",
-        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT
+        "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
+        "best_epoch": e_star,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
