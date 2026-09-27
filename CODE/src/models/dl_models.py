@@ -22,7 +22,7 @@ from keras.layers import (
     LSTM, GRU, Bidirectional, Dense, Dropout,
     Input, GlobalAveragePooling1D, LayerNormalization,
     MultiHeadAttention, Conv1D, MaxPooling1D, Flatten,
-    BatchNormalization, Add
+    BatchNormalization, Add, Lambda
 )
 from keras.callbacks import EarlyStopping
 from keras.optimizers import Adam
@@ -41,10 +41,11 @@ BATCH    = 32
 LR       = 0.001
 
 # Positional encoding (solo Transformer): con d_model = n_feat piccolo
-# (~7-11), il contributo posizionale grezzo (ampiezza [-1,1]) avrebbe peso
-# comparabile al segnale delle feature z-scored (varianza 1) sulle stesse
-# poche dimensioni. PE_ALPHA scala il termine additivo per tenere il
-# contenuto dominante pur iniettando un segnale d'ordine sistematico.
+# (n_feat=10, vedi build_dl_features in feature_engine.py), il contributo
+# posizionale grezzo (ampiezza [-1,1]) avrebbe peso comparabile al segnale
+# delle feature z-scored (varianza 1) sulle stesse poche dimensioni.
+# PE_ALPHA scala il termine additivo per tenere il contenuto dominante pur
+# iniettando un segnale d'ordine sistematico.
 PE_ALPHA = 0.1
 
 
@@ -289,6 +290,14 @@ def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     Campo ricettivo totale con kernel=3, dilations=[1,2,4]:
     (3-1)*1 + (3-1)*2 + (3-1)*4 + 1 = 15 timestep
     Con SEQ_LEN=20, copriamo quasi l'intera finestra.
+
+    C7 (report del relatore, 7/9/2026): l'uscita è presa all'ULTIMO passo
+    temporale (x[:, -1, :]), non con GlobalAveragePooling1D. Il pooling
+    globale media su tutti e 20 i passi della finestra, quindi l'output
+    dipendeva anche dai primi 5 passi (0-4) — fuori dal campo ricettivo di
+    15 dichiarato in tesi. x[:, -1, :] è l'unico timestep il cui campo
+    ricettivo (grazie al causal padding) copre esattamente gli ultimi 15
+    passi (5-19) e nessuno prima.
     """
     X_tr, X_val, X_te, y_tr, y_val, y_te, dates, n_feat = \
         _get_fold_data(df, train_idx, test_idx, cross_asset_dfs)
@@ -313,8 +322,10 @@ def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None):
     x = BatchNormalization()(x)
     x = Dropout(DROPOUT)(x)
 
-    # Aggregazione e output
-    x   = GlobalAveragePooling1D()(x)
+    # Uscita all'ultimo passo temporale (C7) — non GlobalAveragePooling1D,
+    # che dipenderebbe anche dai passi fuori dal campo ricettivo di 15.
+    x   = Lambda(lambda t: t[:, -1, :],
+                 output_shape=lambda s: (s[0], s[2]))(x)
     x   = Dense(32, activation="relu")(x)
     x   = Dropout(DROPOUT)(x)
     out = Dense(1)(x)
