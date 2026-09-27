@@ -23,6 +23,7 @@ from statsmodels.stats.multitest import multipletests
 from src import metrics_econ
 from src.backtesting import run_backtest, estimate_alpha, architecture_vs_regime_D
 from src.walk_forward import get_walk_forward_folds, validate_folds
+from src.futures_calendar import roll_mask
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -90,6 +91,38 @@ def test_d1_run_backtest_manual_three_days():
     np.testing.assert_allclose(bt["Position"], w)
     # L'inversione long->short al giorno 3 costa 2c (|(-1) - 1| = 2 -> costo 2c).
     assert dw[2] == pytest.approx(2.0)
+
+
+def test_d1_roll_cost_applies_to_day_after_roll_date():
+    """
+    Fix richiesto dall'utente (2026-09-27): y_{t+1} include
+    -2c|w_t|*1{t in roll dates} — il costo del roll fatto alla chiusura
+    del giorno t si paga sul rendimento del giorno DOPO, non su quello del
+    giorno t stesso. 2025-07-30 è un giorno di roll noto per Gold
+    (verificato via src.futures_calendar.roll_mask): il costo di roll deve
+    comparire sul rendimento di 2025-07-31 (s-1 = 2025-07-30 è un giorno
+    di roll), mai su quello di 2025-07-30 stesso.
+    """
+    dates = pd.bdate_range("2025-07-28", periods=5)   # include 2025-07-30 (roll Gold)
+    assert dates[2] == pd.Timestamp("2025-07-30")
+
+    own_date_mask = roll_mask("Gold", dates)
+    assert list(own_date_mask) == [False, False, True, False, False]
+
+    r = np.full(5, 0.01)
+    y_pred = np.full(5, 0.5)   # sempre long -> w = 1 costante, nessun costo di turnover dopo t=0
+    c = 0.0001
+
+    bt = run_backtest(r, y_pred, dates=dates, asset_name="Gold", cost_per_side=c)
+
+    R = np.expm1(r)
+    w = np.ones(5)
+    dw = np.abs(np.diff(w, prepend=0.0))         # [1, 0, 0, 0, 0] -> solo costo di apertura a t=0
+    expected_roll_cost = np.array([0, 0, 0, 2 * c, 0])   # su 2025-07-31 (indice 3), non su 07-30
+    expected_y = w * R - c * dw - expected_roll_cost
+
+    np.testing.assert_allclose(bt["Net PnL"], expected_y, atol=1e-12)
+    assert bt["N Roll Days"] == 1
 
 
 # ─────────────────────────────────────────────────────────────────────────

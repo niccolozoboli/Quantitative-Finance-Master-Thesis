@@ -73,7 +73,17 @@ def run_backtest(y_true: np.ndarray,
     turnover_cost    = cost_per_side * position_change
 
     if dates is not None and asset_name is not None:
-        rmask = roll_mask(asset_name, dates)
+        # roll_mask(dates)[i] è True quando dates[i] STESSA è un giorno di
+        # roll. Il costo di roll fatto alla chiusura del giorno t si paga
+        # però sul rendimento del giorno dopo (y_{t+1}, D1-D2/notazione
+        # tesi: -2c|w_t|*1{t in roll dates} dentro y_{t+1}) — quindi va
+        # applicato al rendimento in posizione i se dates[i-1] (non
+        # dates[i]) è un giorno di roll: si sposta la maschera di una
+        # posizione in avanti. Nessun costo sul primo giorno della serie
+        # (non c'è un dates[i-1] osservabile in questo array).
+        rmask_on_own_date = roll_mask(asset_name, dates)
+        rmask = np.zeros(n, dtype=bool)
+        rmask[1:] = rmask_on_own_date[:-1]
     else:
         rmask = np.zeros(n, dtype=bool)
     roll_cost = 2 * cost_per_side * np.abs(signal) * rmask
