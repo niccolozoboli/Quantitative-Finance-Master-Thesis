@@ -1,0 +1,13 @@
+Model,DM Stat,p-value,HAC Lag (L),Sig. (5%),Result,p Holm,Sig. Holm (5%)
+ARMA,0.1011,0.9194,4,No,No significant difference (p=0.919),1.0,No
+Decision Tree,1.1226,0.2616,4,No,No significant difference (p=0.262),1.0,No
+Random Forest,0.9917,0.3213,4,No,No significant difference (p=0.321),1.0,No
+Gradient Boosting,1.1514,0.2496,4,No,No significant difference (p=0.250),1.0,No
+XGBoost,1.792,0.0731,4,No,No significant difference (p=0.073),1.0,No
+SVR,2.5483,0.0108,4,Yes,Model 2 significantly better,0.48600000000000004,No
+LSTM,1.0394,0.2986,4,No,No significant difference (p=0.299),1.0,No
+GRU,0.7438,0.457,4,No,No significant difference (p=0.457),1.0,No
+BiLSTM,0.984,0.3251,4,No,No significant difference (p=0.325),1.0,No
+Transformer,1.676,0.0937,4,No,No significant difference (p=0.094),1.0,No
+TCN,0.3209,0.7483,4,No,No significant difference (p=0.748),1.0,No
+CNN LSTM,1.9357,0.0529,4,No,No significant difference (p=0.053),1.0,No
