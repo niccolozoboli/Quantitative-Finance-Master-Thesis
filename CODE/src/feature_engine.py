@@ -98,7 +98,8 @@ def build_ml_features(df: pd.DataFrame,
         rolling_windows : lista di finestre per rolling statistics
 
     Returns:
-        DataFrame con tutte le feature e colonna 'target' = next-day log_return
+        DataFrame con tutte le feature e colonna 'target' = log_return del
+        giorno corrente t (le feature usano solo informazione fino a t-1).
         Righe con NaN droppate.
     """
     df = df.copy()
@@ -152,8 +153,11 @@ def build_ml_features(df: pd.DataFrame,
     df["dow_sin"] = np.sin(2 * np.pi * dow / 5)
     df["dow_cos"] = np.cos(2 * np.pi * dow / 5)
 
-    # ── Target: next-day log_return ───────────────────────────────────────────
-    df["target"] = r.shift(-1)
+    # ── Target: same-day log_return ───────────────────────────────────────────
+    # La riga con data t predice r_t: tutte le feature sopra usano solo
+    # informazione fino a t-1 (shift(1) o più), quindi target = r (non
+    # shiftato) è già allineato correttamente — r_hat_{t|t-1} = f(F_{t-1}).
+    df["target"] = r
     df.dropna(inplace=True)
 
     return df
@@ -206,7 +210,11 @@ def prepare_ml_fold(df: pd.DataFrame,
     """
     Prepara train/test split per un singolo fold walk-forward.
 
-    - Features Z-scored: scaler fit SOLO su train → no leakage
+    - Features NON scalate: lo Z-score (fit SOLO su train) avviene dentro
+      la Pipeline di _grid_search (src/models/ml_models.py), così anche i
+      3 split interni di TimeSeriesSplit usati dalla grid search vedono
+      solo statistiche del proprio sotto-train, non dell'intero fold →
+      zero leakage anche a livello di validazione interna.
     - Target in scala originale (log_return non scalato)
     - cross_asset_dfs: dict con DataFrame degli altri asset (opzionale)
 
@@ -231,11 +239,6 @@ def prepare_ml_fold(df: pd.DataFrame,
     X_test  = df_feat.loc[valid_test,  feat_cols].values
     y_test  = df_feat.loc[valid_test,  "target"].values
     dates   = df_feat.loc[valid_test].index
-
-    # Z-score: fit SOLO su train, transform su entrambi
-    scaler  = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test  = scaler.transform(X_test)
 
     return X_train, X_test, y_train, y_test, dates, feat_cols
 
@@ -262,8 +265,13 @@ def build_dl_features(df: pd.DataFrame,
       finestra di sequenza), z-score, vol_ratio, cross-asset, calendar
     - Shape finale: (T, N_DL_FEATURES)
 
-    La colonna 'log_return' è sempre inclusa come prima feature
-    (è il segnale primario della sequenza).
+    La colonna 'log_return' è sempre inclusa come prima feature (è r_t
+    stesso). Tutte le altre feature della riga t usano rendimenti fino a
+    t INCLUSO (nessuno shift aggiuntivo oltre alla finestra rolling
+    stessa) — coerente con la colonna log_return, e senza look-ahead:
+    prepare_dl_fold costruisce la sequenza per il target r_i dalle righe
+    i-seq_len..i-1, quindi la riga i (che conterrebbe r_i) non entra mai
+    nell'input usato per prevedere r_i.
     """
     df = df.copy()
     r  = df["log_return"]
@@ -277,18 +285,18 @@ def build_dl_features(df: pd.DataFrame,
     # mom_63 esplicito: con SEQ_LEN=20 il modello non può "vedere" da solo
     # un segnale a 63 giorni, va quindi fornito come feature pre-calcolata
     # (a differenza di mom_5/mom_21 che ricadono nella finestra di sequenza).
-    features["mom_5"]  = r.shift(1).rolling(5).sum()
-    features["mom_21"] = r.shift(1).rolling(21).sum()
-    features["mom_63"] = r.shift(1).rolling(63).sum()
+    features["mom_5"]  = r.rolling(5).sum()
+    features["mom_21"] = r.rolling(21).sum()
+    features["mom_63"] = r.rolling(63).sum()
 
     # Feature 5: Mean reversion z-score
-    mu  = r.shift(1).rolling(21).mean()
-    sig = r.shift(1).rolling(21).std()
-    features["z_score_21"] = (r.shift(1) - mu) / (sig + 1e-8)
+    mu  = r.rolling(21).mean()
+    sig = r.rolling(21).std()
+    features["z_score_21"] = (r - mu) / (sig + 1e-8)
 
     # Feature 6: Volatility ratio (regime proxy)
-    vol_s = r.shift(1).rolling(5).std()
-    vol_l = r.shift(1).rolling(21).std()
+    vol_s = r.rolling(5).std()
+    vol_l = r.rolling(21).std()
     features["vol_ratio"] = vol_s / (vol_l + 1e-8)
 
     # Feature 7-8: Cross-asset (se disponibili)
@@ -296,12 +304,12 @@ def build_dl_features(df: pd.DataFrame,
         if "Gold" in cross_asset_dfs and "Silver" in cross_asset_dfs:
             gold_r   = cross_asset_dfs["Gold"]["log_return"].reindex(df.index)
             silver_r = cross_asset_dfs["Silver"]["log_return"].reindex(df.index)
-            features["gs_spread"] = gold_r.shift(1) - silver_r.shift(1)
+            features["gs_spread"] = gold_r - silver_r
 
         if "Gold" in cross_asset_dfs and "Copper" in cross_asset_dfs:
             gold_r   = cross_asset_dfs["Gold"]["log_return"].reindex(df.index)
             copper_r = cross_asset_dfs["Copper"]["log_return"].reindex(df.index)
-            features["gc_spread"] = gold_r.shift(1) - copper_r.shift(1)
+            features["gc_spread"] = gold_r - copper_r
 
     # Feature 9-10: Calendar encoding
     dow = df.index.dayofweek.astype(float)
