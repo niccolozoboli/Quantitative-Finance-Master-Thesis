@@ -17,6 +17,9 @@ Notazione (identica alla tesi):
                 - 2c|w_{m,t}| * 1{t in roll dates}      (D1-D2)
     con c = cost_per_side (1e-4 per lato) e w = 0 prima del primo giorno OOS.
 
+Esecuzione principale "close" (idealizzazione close-to-close, dichiarata in
+tesi); sensitivity "lag1", "open" e "rolled" (vedi run_backtest).
+
 SR, MDD, Calmar sono importati da src/metrics_econ.py (D4) — stessa
 definizione ovunque nel progetto (backtest, bootstrap, statistica D).
 """
