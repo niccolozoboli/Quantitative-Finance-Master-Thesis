@@ -36,6 +36,8 @@ from src.visualization     import (
     plot_hit_rate_heatmap, plot_sharpe_heatmap,
 )
 
+from src.futures_calendar  import post_roll_mask, roll_window_mask
+from src                   import metrics_econ
 from src.models.arima     import run_arima_fold
 from src.models.garch     import run_garch_fold, qlike_loss, GARCH_DISTS
 from src.models.ml_models import (run_rf_fold, run_xgboost_fold,
@@ -180,10 +182,12 @@ def _resume_marker_path(metal_name):
     return f"{RESULTS_DIR}/predictions_{metal_name}.csv"
 
 
-# Esecuzioni del backtest (commento K13): "close" è la specificazione
-# principale (idealizzazione close-to-close, dichiarata in tesi); "lag1" e
-# "open" sono sensitivity, con proprie famiglie di Holm separate.
-SENSITIVITY_EXECUTIONS = ("lag1", "open")
+# Esecuzioni del backtest: "close" è la specificazione principale
+# (idealizzazione close-to-close, dichiarata in tesi). Sensitivity, con
+# proprie famiglie di Holm separate: "lag1" (sempre) e "open" (commento K13),
+# "rolled" (serie realmente rollata dai contratti singoli, commento K03),
+# questi ultimi due solo se i dati esterni superano i controlli.
+SENSITIVITY_EXECUTIONS = ("lag1", "open", "rolled")
 
 
 def _open_returns_for_asset(metal_name: str, df: pd.DataFrame,
@@ -202,27 +206,47 @@ def _open_returns_for_asset(metal_name: str, df: pd.DataFrame,
     return open_to_open_returns(ohlc, oos_dates), report
 
 
-def _backtest_one(c: dict, metal_name: str, execution: str, open_ret,
+def _rolled_returns_for_asset(metal_name: str,
+                              oos_dates: pd.DatetimeIndex) -> tuple:
+    """
+    Rendimenti della serie realmente rollata (CODE/data/<ticker>_rolled.csv,
+    scritto da tools/build_rolled_series.py). Ritorna (array allineato a
+    oos_dates oppure None, esito). Richiede che ogni data OOS abbia un
+    rendimento del contratto detenuto.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                        f"{METALS[metal_name]}_rolled.csv")
+    if not os.path.exists(path):
+        return None, {"ok": False, "reason": "serie rollata assente"}
+    rolled = pd.read_csv(path, index_col=0, parse_dates=True)
+    r = rolled["R_rolled"].reindex(pd.DatetimeIndex(oos_dates))
+    if r.isna().any():
+        return None, {"ok": False,
+                      "reason": f"serie rollata incompleta: {int(r.isna().sum())} date OOS mancanti"}
+    return r.values.astype(float), {"ok": True, "reason": "ok"}
+
+
+def _backtest_one(c: dict, metal_name: str, execution: str, alt,
                   position=None) -> dict:
-    """run_backtest + intervalli bootstrap + alpha HAC + test DA sotto H0."""
+    """run_backtest + intervalli bootstrap a blocchi."""
     bt = run_backtest(c["y_true"], c["y_pred"], dates=c["dates"],
                       asset_name=metal_name, cost_per_side=0.0001,
                       position=position, execution=execution,
-                      open_returns=open_ret)
+                      alt_returns=alt.get(execution))
     bt.update(block_bootstrap_ci(bt["Net PnL"], bt["Hit"], bt["Active"],
                                  block_length=10, n_boot=2000, seed=42))
     return bt
 
 
-def _benchmark_return(c: dict, execution: str, open_ret, kept) -> np.ndarray:
+def _benchmark_return(c: dict, execution: str, alt, kept) -> np.ndarray:
     """b_{t+1} = rendimento del long passivo con la stessa esecuzione."""
-    if execution == "open":
-        return np.asarray(open_ret, dtype=float)[kept]
+    if execution in ("open", "rolled"):
+        return np.asarray(alt[execution], dtype=float)[kept]
     return np.expm1(c["y_true"])[kept]
 
 
 def _run_backtests_for_asset(concat: dict, regimes_origin: pd.Series,
-                              metal_name: str, open_ret=None) -> dict:
+                              metal_name: str, alt: dict = None) -> dict:
     """
     Backtest statico + Regime-Conditional Strategy per tutti i modelli di
     un asset già concatenati (concat[model_name] = {y_true, y_pred,
@@ -230,24 +254,26 @@ def _run_backtests_for_asset(concat: dict, regimes_origin: pd.Series,
     risultati sono identici. Random Walk esclusa dalla RCS, dall'alpha e
     dai test DA (posizione sempre nulla).
 
-    Per ogni esecuzione in ("close",) + SENSITIVITY_EXECUTIONS ("open" solo
-    se open_ret è disponibile): bootstrap, alpha HAC rispetto al long
-    passivo con la stessa esecuzione, test DA HAC e bootstrap centrato.
-    Solo per "close": alpha della RCS rispetto al long filtrato a_t R_{t+1}
-    e benchmark della regola di esposizione (commento K14).
+    alt = {"open": array | None, "rolled": array | None}: rendimenti
+    alternativi; un'esecuzione è calcolata solo se il suo array esiste.
+    Per ogni esecuzione: bootstrap, alpha HAC rispetto al long passivo con
+    la stessa esecuzione, test DA HAC e bootstrap centrato. Solo per
+    "close": alpha della RCS rispetto al long filtrato a_t R_{t+1} e
+    benchmark della regola di esposizione (commento K14).
 
     Ritorna {"by_exec": {execution: (bt_results, rcs_results)},
              "benchmarks": (summary, per_model_df), "perf_by_regime": df}.
     """
-    executions = ["close", "lag1"] + (["open"] if open_ret is not None else [])
+    alt = {k: v for k, v in (alt or {}).items() if v is not None}
+    executions = ["close", "lag1"] + [e for e in ("open", "rolled") if e in alt]
     by_exec = {}
     for execution in executions:
         bt_results, rcs_results = {}, {}
         for model_name, c in concat.items():
             label = model_name.replace("_", " ")
-            bt = _backtest_one(c, metal_name, execution, open_ret)
+            bt = _backtest_one(c, metal_name, execution, alt)
             if model_name != "Random_Walk":
-                b = _benchmark_return(c, execution, open_ret, bt["Kept"])
+                b = _benchmark_return(c, execution, alt, bt["Kept"])
                 bt.update(estimate_alpha(bt["Net PnL"], b))
                 bt.update(da_test_hac(bt["Hit"], bt["Active"]))
                 bt.update(da_test_centred_bootstrap(bt["Hit"], bt["Active"]))
@@ -255,8 +281,8 @@ def _run_backtests_for_asset(concat: dict, regimes_origin: pd.Series,
 
             if model_name != "Random_Walk":
                 pos = regime_conditional_strategy(c["y_pred"], c["dates"], regimes_origin)
-                bt_rcs = _backtest_one(c, metal_name, execution, open_ret, position=pos)
-                b = _benchmark_return(c, execution, open_ret, bt_rcs["Kept"])
+                bt_rcs = _backtest_one(c, metal_name, execution, alt, position=pos)
+                b = _benchmark_return(c, execution, alt, bt_rcs["Kept"])
                 bt_rcs.update(estimate_alpha(bt_rcs["Net PnL"], b))
                 bt_rcs.update(da_test_hac(bt_rcs["Hit"], bt_rcs["Active"]))
                 bt_rcs.update(da_test_centred_bootstrap(bt_rcs["Hit"], bt_rcs["Active"]))
@@ -281,6 +307,15 @@ def _run_backtests_for_asset(concat: dict, regimes_origin: pd.Series,
     ], ignore_index=True)
     return {"by_exec": by_exec, "benchmarks": (summary, per_model),
             "perf_by_regime": perf}
+
+
+def _alt_returns_for_asset(metal_name: str, df: pd.DataFrame,
+                           oos_dates: pd.DatetimeIndex) -> tuple:
+    """{"open": ..., "rolled": ...} e gli esiti dei controlli."""
+    open_ret, open_rep = _open_returns_for_asset(metal_name, df, oos_dates)
+    rolled_ret, rolled_rep = _rolled_returns_for_asset(metal_name, oos_dates)
+    return ({"open": open_ret, "rolled": rolled_ret},
+            {"open": open_rep, "rolled": rolled_rep})
 
 
 def _save_strategy_returns(by_exec: dict, concat: dict, metal_name: str) -> None:
@@ -358,9 +393,9 @@ def _reconstruct_asset_from_disk(metal_name: str, all_dfs: dict) -> dict:
     y_true_all = concat["Random_Walk"]["y_true"]
     dm_table   = build_dm_table(y_true_all, dm_preds)
 
-    open_ret, open_report = _open_returns_for_asset(
+    alt, open_report = _alt_returns_for_asset(
         metal_name, df, concat["Random_Walk"]["dates"])
-    bt_out = _run_backtests_for_asset(concat, regimes_origin, metal_name, open_ret)
+    bt_out = _run_backtests_for_asset(concat, regimes_origin, metal_name, alt)
     _save_strategy_returns(bt_out["by_exec"], concat, metal_name)
     bt_results, _ = bt_out["by_exec"]["close"]
 
@@ -718,12 +753,13 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
         # ── BACKTESTING (statico + Regime-Conditional Strategy) ────────────────
         # y = w*R - c|Δw| - 2c|w|*1{roll}, R = exp(r)-1, c = 1e-4 per lato.
         # Esecuzione principale "close" + sensitivity "lag1" e, se lo
-        # snapshot OHLC supera i controlli, "open" (commento K13).
+        # dati esterni superano i controlli, "open" (K13) e "rolled" (K03).
         print(f"\n  ── Backtesting (statico + RCS) ──")
-        open_ret, open_reports[metal_name] = _open_returns_for_asset(
+        alt, open_reports[metal_name] = _alt_returns_for_asset(
             metal_name, df, concat["Random_Walk"]["dates"])
-        print(f"  Esecuzione all'apertura: {open_reports[metal_name]['reason']}")
-        bt_out = _run_backtests_for_asset(concat, regimes_origin, metal_name, open_ret)
+        print(f"  Esecuzione all'apertura: {open_reports[metal_name]['open']['reason']}  |  "
+              f"serie rollata: {open_reports[metal_name]['rolled']['reason']}")
+        bt_out = _run_backtests_for_asset(concat, regimes_origin, metal_name, alt)
         bt_results, rcs_results = bt_out["by_exec"]["close"]
         bt_lag, rcs_lag = bt_out["by_exec"]["lag1"]
         for model_name, _ in MODELS:
@@ -828,7 +864,7 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
     # (c) alpha RCS, (d) DA statica, (e) DA RCS. La DA usa il test HAC sotto
     # H0: E[h_t] = 1/2 (commento K04); le strategie con meno di
     # MIN_ACTIVE_DA giorni attivi non sono testate (p-value NaN, esclusi
-    # dalla famiglia). Le esecuzioni di sensitivity ("lag1", "open") formano
+    # dalla famiglia). Le esecuzioni di sensitivity ("lag1", "open", "rolled") formano
     # famiglie separate, riportate come controlli. Il controllo è per
     # famiglia: non implica il 5% sull'unione di tutte le famiglie.
     print(f"\n{'='*64}")
@@ -936,6 +972,42 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
         f"{RESULTS_DIR}/rcs_benchmarks_by_model.csv", index=False)
     pd.concat(perf_regime_dfs, ignore_index=True).to_csv(
         f"{RESULTS_DIR}/performance_by_regime.csv", index=False)
+
+    # ── K03: sensitivity sui giorni di cambio contratto ────────────────────────
+    # Le serie nette già calcolate (esecuzione principale) vengono ristrette
+    # escludendo i rendimenti post-roll e i giorni adiacenti (k = 1); i costi
+    # non si ricalcolano. Documentazione empirica delle discontinuità: |r|
+    # medio post-roll contro gli altri giorni e i 10 |r| più grandi.
+    roll_rows, disc_rows = [], []
+    for asset_name, concat in concat_all.items():
+        dates = pd.DatetimeIndex(concat["Random_Walk"]["dates"])
+        r = concat["Random_Walk"]["y_true"]
+        post = post_roll_mask(asset_name, dates)
+        win = roll_window_mask(asset_name, dates, k=1)
+        R = np.expm1(r)
+        for strategy in ("static", "rcs"):
+            for label, bt in bt_all["close"][strategy][asset_name].items():
+                if label == "Random Walk":
+                    continue
+                y = np.asarray(bt["Net PnL"])
+                al = estimate_alpha(y[~win], R[~win])
+                roll_rows.append({
+                    "Asset": asset_name, "Model": label, "Strategy": strategy,
+                    "N Excluded": int(win.sum()),
+                    "Sharpe": bt["Sharpe Ratio"],
+                    "Sharpe excl. roll window": round(metrics_econ.sharpe_ratio(y[~win]), 4),
+                    "Alpha p-value": bt["Alpha p-value"],
+                    "Alpha p-value excl. roll window": al["Alpha p-value"]})
+        top = np.argsort(-np.abs(r))[:10]
+        for rank, i in enumerate(top, 1):
+            disc_rows.append({"Asset": asset_name, "Rank |r|": rank,
+                              "Date": dates[i].date(), "r": float(r[i]),
+                              "Post-roll": bool(post[i]), "In roll window": bool(win[i]),
+                              "Mean |r| post-roll": float(np.abs(r[post]).mean()),
+                              "Mean |r| other days": float(np.abs(r[~post]).mean()),
+                              "N post-roll days": int(post.sum())})
+    pd.DataFrame(roll_rows).to_csv(f"{RESULTS_DIR}/roll_sensitivity.csv", index=False)
+    pd.DataFrame(disc_rows).to_csv(f"{RESULTS_DIR}/roll_discontinuities.csv", index=False)
 
     # ── RQ3: statistica D (dispersione tra regimi vs tra modelli) ──────────────
     # Diagnostica descrittiva, non attribuzione causale. Principale:

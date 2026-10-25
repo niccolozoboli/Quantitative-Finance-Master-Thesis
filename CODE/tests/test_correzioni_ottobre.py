@@ -133,7 +133,7 @@ def test_k13_open_execution_uses_open_to_open_returns():
     r = np.array([0.01, -0.02, 0.03])
     y_pred = np.array([1.0, -1.0, -1.0])
     R_oo = np.array([0.005, -0.01, np.nan])  # ultimo giorno non disponibile
-    bt = run_backtest(r, y_pred, cost_per_side=c, execution="open", open_returns=R_oo)
+    bt = run_backtest(r, y_pred, cost_per_side=c, execution="open", alt_returns=R_oo)
     expected = np.array([0.005 - c, 0.01 - 2 * c])
     assert np.allclose(bt["Net PnL"], expected, atol=1e-15)
     assert bt["N Days"] == 2
@@ -260,3 +260,29 @@ def test_k01_garch_fold_runs_for_both_distributions(dist):
     dates, real, fc, params = run_garch_fold(df, np.arange(590), np.arange(590, 593), dist=dist)
     assert len(fc) == 3 and (fc > 0).all()
     assert (params["nu"] is not None) == (dist == "t")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# K03 — giorni di cambio contratto e contratto detenuto
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_k03_gold_jan2026_roll_window_and_held_contract():
+    from src.futures_calendar import post_roll_mask, roll_window_mask, held_contracts
+    dates = pd.bdate_range("2026-01-26", "2026-02-04")
+    # FND contratto Feb-2026 = 30/1/2026 (ultimo giorno lavorativo di gennaio),
+    # roll = 29/1; il rendimento a cavallo del cambio è quello del 30/1.
+    post = post_roll_mask("Gold", dates)
+    assert list(dates[post]) == [pd.Timestamp("2026-01-30")]
+    win = roll_window_mask("Gold", dates, k=1)
+    assert list(dates[win]) == list(pd.to_datetime(["2026-01-29", "2026-01-30", "2026-02-02"]))
+    held = dict(zip(dates, held_contracts("Gold", dates)))
+    assert held[pd.Timestamp("2026-01-29")] == (2026, 2)
+    assert held[pd.Timestamp("2026-01-30")] == (2026, 4)
+
+
+def test_k03_rolled_execution_uses_contract_returns():
+    r = np.array([0.01, -0.02])
+    R_roll = np.array([0.004, 0.006])
+    bt = run_backtest(r, np.array([1.0, 1.0]), cost_per_side=0.0, execution="rolled",
+                      alt_returns=R_roll)
+    assert np.allclose(bt["Net PnL"], R_roll)

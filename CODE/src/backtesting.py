@@ -32,7 +32,7 @@ from src import metrics_econ
 _D_REGIMES = ["stable", "normal", "volatile"]
 
 
-EXECUTIONS = ("close", "lag1", "open")
+EXECUTIONS = ("close", "lag1", "open", "rolled")
 
 
 def lag_positions(w: np.ndarray, lag: int = 1) -> np.ndarray:
@@ -57,7 +57,7 @@ def run_backtest(y_true: np.ndarray,
                   threshold: float = 0.0,
                   position: np.ndarray = None,
                   execution: str = "close",
-                  open_returns: np.ndarray = None) -> dict:
+                  alt_returns: np.ndarray = None) -> dict:
     """
     Strategia long/short basata sul segno della previsione.
 
@@ -77,10 +77,14 @@ def run_backtest(y_true: np.ndarray,
                 w_exec[i] = w[i-1] (lag_positions), con prima posizione 0.
       "open"  — esecuzione all'apertura successiva: la posizione decisa alla
                 chiusura di t è eseguita all'apertura di t+1 e tenuta fino
-                all'apertura di t+2. `open_returns[i]` deve essere il
+                all'apertura di t+2. `alt_returns[i]` deve essere il
                 rendimento open-to-open O_{i+1}/O_i - 1, con O_i l'apertura
                 della data dates[i]; NaN dove non disponibile (quei giorni
                 vengono esclusi dalla serie).
+      "rolled" — stessa tempistica di "close", ma `alt_returns[i]` è il
+                rendimento close-to-close del singolo contratto detenuto
+                (serie realmente rollata, commento K03), costruito da
+                tools/build_rolled_series.py.
     Costi di transazione e di roll sono sempre calcolati sulla posizione
     effettivamente eseguita. La DA confronta il segno della previsione
     eseguita con il segno del rendimento effettivamente realizzato.
@@ -111,12 +115,12 @@ def run_backtest(y_true: np.ndarray,
         R = np.expm1(y_true)
         signal = lag_positions(signal, 1)
         pred_exec = lag_positions(y_pred, 1)
-    else:  # "open"
-        if open_returns is None:
-            raise ValueError("execution='open' richiede open_returns")
-        R = np.asarray(open_returns, dtype=float).flatten()
+    else:  # "open" / "rolled"
+        if alt_returns is None:
+            raise ValueError(f"execution='{execution}' richiede alt_returns")
+        R = np.asarray(alt_returns, dtype=float).flatten()
         if len(R) != len(y_true):
-            raise ValueError("open_returns deve avere la stessa lunghezza di y_true")
+            raise ValueError("alt_returns deve avere la stessa lunghezza di y_true")
 
     keep = ~np.isnan(R)
     n = int(keep.sum())
