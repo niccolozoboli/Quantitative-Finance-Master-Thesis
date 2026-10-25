@@ -286,3 +286,80 @@ def test_k03_rolled_execution_uses_contract_returns():
     bt = run_backtest(r, np.array([1.0, 1.0]), cost_per_side=0.0, execution="rolled",
                       alt_returns=R_roll)
     assert np.allclose(bt["Net PnL"], R_roll)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# K08 — TCN con campo ricettivo 15 (principale) e 31 (robustezza)
+# ─────────────────────────────────────────────────────────────────────────
+
+def _first_step_affecting_output(layers):
+    import tensorflow as tf
+    from src.models import dl_models
+    tf.random.set_seed(0)
+    model = dl_models._build_tcn(5, layers)
+    rng = np.random.default_rng(0)
+    base = rng.normal(size=(1, dl_models.SEQ_LEN, 5)).astype("float32")
+    out_base = model.predict(base, verbose=0)
+    for pos in range(dl_models.SEQ_LEN):
+        pert = base.copy(); pert[0, pos, :] += 100.0
+        if not np.allclose(model.predict(pert, verbose=0), out_base):
+            return pos
+
+
+def test_k08_receptive_fields():
+    from src.models import dl_models
+    assert dl_models.tcn_receptive_field(dl_models.TCN_LAYERS) == 15
+    assert dl_models.tcn_receptive_field(dl_models.TCN31_LAYERS) == 31
+    assert _first_step_affecting_output(dl_models.TCN_LAYERS) == 5      # ultimi 15 passi
+    assert _first_step_affecting_output(dl_models.TCN31_LAYERS) == 0    # tutti i 20 passi
+
+
+def test_k09_dl_models_accept_seed():
+    import inspect
+    from src.models import dl_models
+    for name in ["run_lstm_fold", "run_gru_fold", "run_bilstm_fold",
+                 "run_transformer_fold", "run_tcn_fold", "run_tcn31_fold",
+                 "run_cnn_lstm_fold"]:
+        assert inspect.signature(getattr(dl_models, name)).parameters["seed"].default == 42
+
+
+def test_k29_positional_encoding_channel_variance():
+    from src.models import dl_models
+    v = dl_models.positional_encoding_channel_variance(10)
+    assert v.shape == (10,) and (v <= 0.01 + 1e-12).all()
+    assert v[1] == pytest.approx(0.01 * np.var(np.cos(np.arange(20))), rel=1e-5)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# K11 — calendario uniforme tra modelli ML e reti
+# ─────────────────────────────────────────────────────────────────────────
+
+def _df_with_holiday(n=150):
+    dates = pd.bdate_range("2024-01-01", periods=n + 1)
+    dates = dates.delete(100)                      # una "festività" infrasettimanale
+    r = np.random.default_rng(9).normal(0, 0.01, n)
+    return pd.DataFrame({"log_return": r}, index=dates)
+
+
+def test_k11_dl_last_row_encodes_target_weekday_like_ml():
+    from src.feature_engine import build_dl_features, build_ml_features
+    df = _df_with_holiday()
+    dl = build_dl_features(df)
+    ml = build_ml_features(df, lags=[1], rolling_windows=[5])
+    # riga u delle reti = weekday di u+1; riga del target nei ML = weekday del target
+    common = dl.index[:-1].intersection(ml.index)
+    nxt = {d: df.index[df.index.get_loc(d) + 1] for d in common}
+    for d in common:
+        target = nxt[d]
+        if target in ml.index:
+            assert dl.loc[d, "dow_sin"] == pytest.approx(ml.loc[target, "dow_sin"])
+            assert dl.loc[d, "dow_cos"] == pytest.approx(ml.loc[target, "dow_cos"])
+
+
+def test_k11_dl_fold_keeps_last_test_day():
+    from src.feature_engine import prepare_dl_fold
+    df = _df_with_holiday()
+    n = len(df)
+    train_idx, test_idx = np.arange(0, n - 10), np.arange(n - 10, n)
+    X_tr, X_te, y_tr, y_te, dates, n_feat = prepare_dl_fold(df, train_idx, test_idx)
+    assert len(y_te) == 10 and dates[-1] == df.index[-1]

@@ -60,6 +60,17 @@ def _sinusoidal_positional_encoding(seq_len: int, d_model: int) -> np.ndarray:
     return pe
 
 
+def positional_encoding_channel_variance(d_model: int, seq_len: int = SEQ_LEN,
+                                         kappa: float = None) -> np.ndarray:
+    """
+    Varianza empirica, sui seq_len posizioni della finestra, di ciascun
+    canale del termine additivo kappa * PE (commento K29: le varianze per
+    canale vanno riportate dall'encoding implementato).
+    """
+    kappa = PE_ALPHA if kappa is None else kappa
+    return (kappa * _sinusoidal_positional_encoding(seq_len, d_model)).astype(float).var(axis=0)
+
+
 def _early_stop():
     return EarlyStopping(
         monitor="val_loss",
@@ -130,7 +141,8 @@ def _train_with_refit(build_fn, X_tr_full, y_tr_full, seed: int = 42,
 # MODELLO 1 — LSTM
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
+def run_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None,
+                  seed: int = 42):
     """
     LSTM a due layer con input multivariato.
     Layer 1: LSTM(64, return_sequences=True)
@@ -150,12 +162,12 @@ def run_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
         m.compile(optimizer=Adam(LR), loss="mse")
         return m
 
-    model, e_star = _train_with_refit(build, X_tr, y_tr)
+    model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
 
     params = {
         "architecture": f"LSTM(64)->LSTM(32)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
-        "best_epoch": e_star,
+        "best_epoch": e_star, "seed": seed,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -164,7 +176,8 @@ def run_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
 # MODELLO 2 — GRU
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_gru_fold(df, train_idx, test_idx, cross_asset_dfs=None):
+def run_gru_fold(df, train_idx, test_idx, cross_asset_dfs=None,
+                 seed: int = 42):
     """
     GRU a due layer. Più veloce di LSTM, parametri ridotti.
     Preferibile quando il dataset è più piccolo o il tempo di training
@@ -184,12 +197,12 @@ def run_gru_fold(df, train_idx, test_idx, cross_asset_dfs=None):
         m.compile(optimizer=Adam(LR), loss="mse")
         return m
 
-    model, e_star = _train_with_refit(build, X_tr, y_tr)
+    model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
 
     params = {
         "architecture": f"GRU(64)->GRU(32)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
-        "best_epoch": e_star,
+        "best_epoch": e_star, "seed": seed,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -198,7 +211,8 @@ def run_gru_fold(df, train_idx, test_idx, cross_asset_dfs=None):
 # MODELLO 3 — BiLSTM
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_bilstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
+def run_bilstm_fold(df, train_idx, test_idx, cross_asset_dfs=None,
+                    seed: int = 42):
     """
     Bidirectional LSTM. Processa la sequenza in entrambe le direzioni.
     All'interno di una finestra fissa (SEQ_LEN giorni già osservati),
@@ -222,12 +236,12 @@ def run_bilstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
         m.compile(optimizer=Adam(LR), loss="mse")
         return m
 
-    model, e_star = _train_with_refit(build, X_tr, y_tr)
+    model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
 
     params = {
         "architecture": f"BiLSTM(64)->BiLSTM(32)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
-        "best_epoch": e_star,
+        "best_epoch": e_star, "seed": seed,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -236,7 +250,8 @@ def run_bilstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
 # MODELLO 4 — TRANSFORMER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None):
+def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None,
+                         seed: int = 42):
     """
     Transformer con multi-head self-attention: 4 head, key_dim=16,
     due blocchi di attention in sequenza, FFN a 128 unità.
@@ -288,12 +303,12 @@ def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None):
         m.compile(optimizer=Adam(LR), loss="mse")
         return m
 
-    model, e_star = _train_with_refit(build, X_tr, y_tr)
+    model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
 
     params = {
         "architecture": f"Transformer(heads=4,ff=128,blocks=2,PE=sinusoidal*{PE_ALPHA})->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
-        "pe_alpha": PE_ALPHA, "best_epoch": e_star,
+        "pe_alpha": PE_ALPHA, "best_epoch": e_star, "seed": seed,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -302,7 +317,44 @@ def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None):
 # MODELLO 5 — TCN (Temporal Convolutional Network)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None):
+# (filtri, dilatazione) per layer, kernel 3, causal padding.
+TCN_LAYERS   = [(64, 1), (64, 2), (32, 4)]           # campo ricettivo 15
+TCN31_LAYERS = [(64, 1), (64, 2), (32, 4), (32, 8)]  # campo ricettivo 31 >= 20
+TCN_KERNEL   = 3
+
+
+def tcn_receptive_field(layers, kernel: int = TCN_KERNEL) -> int:
+    """1 + (k - 1) * sum delle dilatazioni."""
+    return 1 + (kernel - 1) * sum(d for _, d in layers)
+
+
+def _build_tcn(n_feat: int, layers) -> "Model":
+    """
+    Stack di Conv1D causali dilatati (kernel 3), ciascuno seguito da
+    BatchNormalization e Dropout, uscita all'ULTIMO passo temporale
+    (x[:, -1, :]), poi Dense(32) -> Dense(1).
+    """
+    inp = Input(shape=(SEQ_LEN, n_feat))
+    x = inp
+    for filters, dilation in layers:
+        x = Conv1D(filters, kernel_size=TCN_KERNEL, dilation_rate=dilation,
+                   padding="causal", activation="relu")(x)
+        x = BatchNormalization()(x)
+        x = Dropout(DROPOUT)(x)
+    # Uscita all'ultimo passo temporale — non GlobalAveragePooling1D, che
+    # dipenderebbe anche dai passi fuori dal campo ricettivo.
+    x   = Lambda(lambda t: t[:, -1, :],
+                 output_shape=lambda s: (s[0], s[2]))(x)
+    x   = Dense(32, activation="relu")(x)
+    x   = Dropout(DROPOUT)(x)
+    out = Dense(1)(x)
+    m = Model(inputs=inp, outputs=out)
+    m.compile(optimizer=Adam(LR), loss="mse")
+    return m
+
+
+def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None,
+                 seed: int = 42):
     """
     Temporal Convolutional Network con dilated causal convolutions.
 
@@ -337,45 +389,40 @@ def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None):
         _get_fold_data(df, train_idx, test_idx, cross_asset_dfs)
 
     def build():
-        inp = Input(shape=(SEQ_LEN, n_feat))
+        return _build_tcn(n_feat, TCN_LAYERS)
 
-        # Layer 1: dilation=1 (vede 3 step contigui)
-        x = Conv1D(64, kernel_size=3, dilation_rate=1,
-                   padding="causal", activation="relu")(inp)
-        x = BatchNormalization()(x)
-        x = Dropout(DROPOUT)(x)
-
-        # Layer 2: dilation=2 (vede 5 step effettivi)
-        x = Conv1D(64, kernel_size=3, dilation_rate=2,
-                   padding="causal", activation="relu")(x)
-        x = BatchNormalization()(x)
-        x = Dropout(DROPOUT)(x)
-
-        # Layer 3: dilation=4 (vede 9 step effettivi)
-        x = Conv1D(32, kernel_size=3, dilation_rate=4,
-                   padding="causal", activation="relu")(x)
-        x = BatchNormalization()(x)
-        x = Dropout(DROPOUT)(x)
-
-        # Uscita all'ultimo passo temporale (C7) — non
-        # GlobalAveragePooling1D, che dipenderebbe anche dai passi fuori
-        # dal campo ricettivo di 15.
-        x   = Lambda(lambda t: t[:, -1, :],
-                     output_shape=lambda s: (s[0], s[2]))(x)
-        x   = Dense(32, activation="relu")(x)
-        x   = Dropout(DROPOUT)(x)
-        out = Dense(1)(x)
-
-        m = Model(inputs=inp, outputs=out)
-        m.compile(optimizer=Adam(LR), loss="mse")
-        return m
-
-    model, e_star = _train_with_refit(build, X_tr, y_tr)
+    model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
 
     params = {
         "architecture": "TCN(dilations=[1,2,4],kernel=3)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat,
-        "receptive_field": 15, "dropout": DROPOUT, "best_epoch": e_star,
+        "receptive_field": tcn_receptive_field(TCN_LAYERS), "dropout": DROPOUT,
+        "best_epoch": e_star, "seed": seed,
+    }
+    return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
+
+
+def run_tcn31_fold(df, train_idx, test_idx, cross_asset_dfs=None,
+                   seed: int = 42):
+    """
+    Controllo di robustezza (commento K08 del relatore): stessa TCN con un
+    quarto layer a dilatazione 8, campo ricettivo 1 + 2*(1+2+4+8) = 31 >= 20,
+    quindi l'uscita all'ultimo passo dipende da tutti i 20 passi della
+    finestra, come per LSTM/GRU/Transformer. Non fa parte dei 12 modelli
+    principali: non entra in DM, Holm principali né nella statistica D.
+    """
+    X_tr, X_te, y_tr, y_te, dates, n_feat = \
+        _get_fold_data(df, train_idx, test_idx, cross_asset_dfs)
+
+    def build():
+        return _build_tcn(n_feat, TCN31_LAYERS)
+
+    model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
+    params = {
+        "architecture": "TCN(dilations=[1,2,4,8],kernel=3)->Dense(1)",
+        "seq_len": SEQ_LEN, "n_features": n_feat,
+        "receptive_field": tcn_receptive_field(TCN31_LAYERS),
+        "dropout": DROPOUT, "best_epoch": e_star, "seed": seed,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params
 
@@ -384,7 +431,8 @@ def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None):
 # MODELLO 6 — CNN-LSTM ibrido
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_cnn_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
+def run_cnn_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None,
+                      seed: int = 42):
     """
     CNN-LSTM ibrido: convoluzione locale + memoria temporale.
 
@@ -435,11 +483,11 @@ def run_cnn_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None):
         m.compile(optimizer=Adam(LR), loss="mse")
         return m
 
-    model, e_star = _train_with_refit(build, X_tr, y_tr)
+    model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
 
     params = {
         "architecture": "Conv1D(32,k=3)->MaxPool->LSTM(64)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
-        "best_epoch": e_star,
+        "best_epoch": e_star, "seed": seed,
     }
     return dates, y_te, model.predict(X_te, verbose=0).flatten(), params

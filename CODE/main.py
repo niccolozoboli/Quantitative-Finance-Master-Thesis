@@ -45,7 +45,10 @@ from src.models.ml_models import (run_rf_fold, run_xgboost_fold,
 from src.models import dl_models
 from src.models.dl_models import (run_lstm_fold, run_gru_fold,
                                    run_bilstm_fold, run_transformer_fold,
-                                   run_tcn_fold, run_cnn_lstm_fold)
+                                   run_tcn_fold, run_tcn31_fold,
+                                   run_cnn_lstm_fold,
+                                   positional_encoding_channel_variance)
+from src.feature_engine   import get_n_features
 
 START = "2010-01-01"
 END   = "2026-05-01"   # aggiornato — include dati fino ad oggi
@@ -90,12 +93,35 @@ def _gpu_info() -> str:
         return "unknown"
 
 
-def _write_run_manifest(seed: int = 42, smoke: bool = False) -> dict:
+def _run_config() -> dict:
+    """Scelte metodologiche fissate prima dell'esecuzione (vedi PIANO_CORREZIONI.md)."""
+    return {
+        "execution_main": "close",
+        "execution_sensitivity": list(SENSITIVITY_EXECUTIONS),
+        "da_test": "HAC on h_t - 1/2 (main) + centred block bootstrap (check)",
+        "min_active_days_da": MIN_ACTIVE_DA,
+        "holm_main_families": ["DM", "alpha static", "alpha RCS", "DA static", "DA RCS"],
+        "D_aggregation_main": "portfolio",
+        "D_controls": ["per_asset", "two_way_decomposition"],
+        "D_min_obs_per_cell": 5,
+        "garch_dists": list(GARCH_DISTS),
+        "dl_calendar": "weekday of next trading day (uniform with ML)",
+        "main_seed": 42,
+        "robustness_runs": {"dl_seeds": [1, 2, 3, 4], "tcn31": True},
+        "bootstrap": {"block_length": 10, "n_boot": 2000, "seed": 42},
+        "rcs_benchmark_random_reps": 1000,
+        "roll_window_k": 1,
+    }
+
+
+def _write_run_manifest(seed: int = 42, smoke: bool = False, tag: str = None,
+                        extra: dict = None) -> dict:
     """
-    results/run_manifest.json — commit git, versioni pacchetti, GPU,
-    versione Python, seed, data. --resume confronta il commit corrente con
-    quello salvato qui (vedi _check_resume_commit) per rifiutare un resume
-    contro CSV prodotti da un codice diverso.
+    results/run_manifest.json (esecuzione principale) oppure
+    results/run_manifest_<tag>.json (esecuzioni di robustezza) — commit git,
+    versioni pacchetti, GPU, versione Python, seed, data e scelte
+    metodologiche. --resume confronta il commit corrente con quello salvato
+    nel manifest principale (vedi _check_resume_commit).
     """
     manifest = {
         "commit":          _git_commit(),
@@ -106,10 +132,15 @@ def _write_run_manifest(seed: int = 42, smoke: bool = False) -> dict:
         "seed":            seed,
         "date":            datetime.datetime.now().isoformat(),
         "smoke":           smoke,
+        "tag":             tag,
+        "config":          _run_config(),
     }
+    if extra:
+        manifest.update(extra)
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    with open(f"{RESULTS_DIR}/run_manifest.json", "w") as f:
-        json.dump(manifest, f, indent=2)
+    name = "run_manifest.json" if tag is None else f"run_manifest_{tag}.json"
+    with open(f"{RESULTS_DIR}/{name}", "w") as f:
+        json.dump(manifest, f, indent=2, default=str)
     return manifest
 
 
@@ -158,6 +189,11 @@ MODELS = [
 ]
 
 DL_MODELS = {"LSTM", "GRU", "BiLSTM", "Transformer", "TCN", "CNN_LSTM"}
+
+# Esecuzioni di robustezza (commenti K08, K09): file separati, mai nei test
+# principali (DM, Holm) né nella statistica D.
+ROBUSTNESS_MODELS = {"tcn31": [("TCN31", run_tcn31_fold)]}
+DL_MODEL_FNS = [(m, fn) for m, fn in MODELS if m in DL_MODELS]
 ML_MODELS = {"Decision_Tree", "Random_Forest", "Gradient_Boosting",
              "XGBoost", "SVR"}
 
@@ -441,7 +477,7 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
 
     if resume:
         _check_resume_commit()
-    _write_run_manifest(seed=42, smoke=smoke)
+    manifest_start = _write_run_manifest(seed=42, smoke=smoke)
 
     # --smoke: 1 asset, 2 fold, 2 epoche — solo per verificare che la
     # pipeline giri end-to-end, mai per numeri da citare in tesi.
@@ -488,6 +524,13 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
     adf_table = build_adf_table(return_series)
     print(adf_table.to_string())
     adf_table.to_csv(f"{RESULTS_DIR}/adf_test.csv")
+
+    # Varianza per canale del positional encoding scalato (commento K29)
+    first = next(iter(all_dfs.values()))
+    n_feat_dl = get_n_features(first, cross_asset_dfs=all_dfs)
+    pd.DataFrame({"Channel": np.arange(n_feat_dl),
+                  "Variance kappa*PE": positional_encoding_channel_variance(n_feat_dl)}
+                 ).to_csv(f"{RESULTS_DIR}/pe_channel_variance.csv", index=False)
 
     # ── Loop principale per asset ─────────────────────────────────────────────
     for metal_name, ticker in metals.items():
@@ -1100,20 +1143,69 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
                     save_path=p("09_dashboard",
                                 "summary_dashboard_all_models_all_assets"))
 
-    print("\n✅  Pipeline completa.")
-    print("    results/metrics.csv")
-    print("    results/backtest_<asset>.csv")
-    print("    results/backtest_rcs_<asset>.csv")
-    print("    results/backtesting_all_assets.csv")
-    print("    results/predictions_<asset>.csv")
-    print("    results/strategy_returns_<asset>.csv")
-    print("    results/folds.csv")
-    print("    results/garch_volatility.csv")
-    print("    results/dl_best_epochs.csv")
-    print("    results/architecture_vs_regime_D.csv")
-    print("    results/sharpe_by_model_regime.csv")
+    # Manifest finale: stesse informazioni + esito dei controlli sui dati
+    # esterni (snapshot OHLC, serie rollata) per ciascun asset.
+    _write_run_manifest(seed=42, smoke=smoke, extra={
+        "date_start": manifest_start["date"],
+        "external_data_checks": open_reports})
+
+    print("\n✅  Pipeline completa. File principali in results/:")
+    for f in ["metrics.csv (RMSE media dei fold + RMSE pooled)",
+              "DM_test_<asset>.csv", "holm_families.csv",
+              "backtest[_rcs]_<asset>.csv (esecuzione close)",
+              "backtest[_rcs]_lag1_<asset>.csv, _open_, _rolled_ (sensitivity)",
+              "rcs_benchmarks.csv, rcs_benchmarks_by_model.csv",
+              "performance_by_regime.csv",
+              "architecture_vs_regime_D.csv, sharpe_by_model_regime[_per_asset].csv,",
+              "D_per_asset.csv, D_regime_counts.csv, two_way_decomposition.csv",
+              "roll_sensitivity.csv, roll_discontinuities.csv",
+              "garch_volatility.csv, garch_forecasts_<asset>.csv, garch_dm_qlike.csv",
+              "predictions_<asset>.csv, strategy_returns_<asset>.csv",
+              "folds.csv, dl_best_epochs.csv, pe_channel_variance.csv, adf_test.csv",
+              "backtesting_all_assets.csv, run_manifest.json"]:
+        print(f"    {f}")
 
     return results_df
+
+
+def run_partial(tag: str, models: list, seed: int, smoke: bool = False) -> None:
+    """
+    Esecuzione di robustezza: solo i modelli indicati, tutti gli asset e i
+    fold, con il `seed` indicato. Scrive predictions_<tag>_<asset>.csv,
+    dl_best_epochs_<tag>.csv e run_manifest_<tag>.json; non tocca i file
+    dell'esecuzione principale. Va lanciata dallo STESSO commit
+    dell'esecuzione principale (tools/summarize_robustness.py lo verifica).
+    """
+    set_global_seed(seed)
+    _write_run_manifest(seed=seed, smoke=smoke, tag=tag,
+                        extra={"models": [m for m, _ in models]})
+    metals  = dict(list(METALS.items())[:1]) if smoke else METALS
+    n_folds = 2 if smoke else N_FOLDS
+    if smoke:
+        dl_models.EPOCHS = 2
+    all_dfs = {m: load_and_preprocess(m, t, start=START, end=END)
+               for m, t in METALS.items()}
+    epoch_rows = []
+    for metal_name in metals:
+        df = all_dfs[metal_name]
+        folds = get_walk_forward_folds(len(df), n_folds=n_folds)
+        validate_folds(folds, len(df), n_folds=n_folds)
+        rows = []
+        for fi, (train_idx, test_idx) in enumerate(folds):
+            for model_name, run_fn in models:
+                dates, y_true, y_pred, params = run_fn(
+                    df, train_idx, test_idx, cross_asset_dfs=all_dfs, seed=seed)
+                epoch_rows.append({"Asset": metal_name, "Model": model_name,
+                                   "Fold": fi + 1, "Seed": seed,
+                                   "Best Epoch": params.get("best_epoch")})
+                for d, yt, yp in zip(dates, y_true, y_pred):
+                    rows.append({"Model": model_name.replace("_", " "), "Fold": fi + 1,
+                                 "Date": d, "y_true": yt, "y_pred": yp, "Seed": seed})
+                print(f"  [{tag}] {metal_name} fold {fi+1} {model_name} fatto")
+        pd.DataFrame(rows).to_csv(
+            f"{RESULTS_DIR}/predictions_{tag}_{metal_name}.csv", index=False)
+    pd.DataFrame(epoch_rows).to_csv(f"{RESULTS_DIR}/dl_best_epochs_{tag}.csv", index=False)
+    print(f"\n✅  Esecuzione di robustezza '{tag}' completata.")
 
 
 if __name__ == "__main__":
@@ -1133,5 +1225,22 @@ if __name__ == "__main__":
         help="Run ridotto (1 asset, 2 fold, 2 epoche DL) per verificare che "
              "la pipeline giri end-to-end. Da eseguire in locale — MAI per "
              "numeri da citare in tesi.")
+    parser.add_argument(
+        "--dl-seed", type=int, default=None,
+        help="Esecuzione di robustezza (commento K09): solo le 6 reti con "
+             "il seed indicato (es. 1, 2, 3, 4). Scrive "
+             "predictions_dl_seed<K>_<asset>.csv senza toccare i risultati "
+             "dell'esecuzione principale (seed 42).")
+    parser.add_argument(
+        "--robustness", choices=sorted(ROBUSTNESS_MODELS), default=None,
+        help="Esecuzione di robustezza (commento K08): 'tcn31' = TCN con "
+             "campo ricettivo 31. Scrive predictions_tcn31_<asset>.csv.")
     args = parser.parse_args()
-    run_pipeline(resume=args.resume, smoke=args.smoke)
+    if args.dl_seed is not None:
+        run_partial(f"dl_seed{args.dl_seed}", DL_MODEL_FNS, seed=args.dl_seed,
+                    smoke=args.smoke)
+    elif args.robustness is not None:
+        run_partial(args.robustness, ROBUSTNESS_MODELS[args.robustness], seed=42,
+                    smoke=args.smoke)
+    else:
+        run_pipeline(resume=args.resume, smoke=args.smoke)
