@@ -26,47 +26,53 @@ all'inventario dei commenti (K01–K15 = i 15 commenti in verde).
 ## Modifiche
 
 ### Metriche (K05, K16)
-- [ ] C1–C5 `src/metrics_econ.py`: W_0 = 1, MDD da u = 0, `annualised_return`, Calmar composto.
-- [ ] C7 `backtesting.run_backtest`: `Annual Return (%)` composto; `Mean Daily Return x252 (%)` aritmetico.
-- [ ] C50–C51 test aggiornati e nuovi.
+- [x] C1–C5 `src/metrics_econ.py`: W_0 = 1, MDD da u = 0, `annualised_return`, Calmar composto.
+- [x] C7 `backtesting.run_backtest`: `Annual Return (%)` composto; `Mean Daily Return x252 (%)` aritmetico.
+- [x] C50–C51 test aggiornati e nuovi.
 - Nota: C6 (Sharpe NaN a varianza nulla, non proposta dal relatore) **non applicata**: i NaN si propagherebbero a intervalli bootstrap e D. Resta la convenzione 0, da dichiarare in tesi.
 
 ### Test DA e Holm (K04, K17, K18)
-- [ ] C10 `block_bootstrap_ci`: rimosso il p-value non centrato; restano gli intervalli.
-- [ ] C22–C23 `statistical_tests`: `da_test_hac`, `da_test_centred_bootstrap`, `MIN_ACTIVE_DA = 30`.
-- [ ] C16 colonne di `backtest_summary_table`.
-- [ ] C43 `main.py`: 5 famiglie principali + famiglie di sensitivity.
+- [x] C10 `block_bootstrap_ci`: rimosso il p-value non centrato; restano gli intervalli.
+- [x] C22–C23 `statistical_tests`: `da_test_hac`, `da_test_centred_bootstrap`, `MIN_ACTIVE_DA = 30`.
+- [x] C16 colonne di `backtest_summary_table`.
+- [x] C43 `main.py`: 5 famiglie principali + famiglie di sensitivity.
 
 ### Timing (K13, K24)
-- [ ] C8–C9 `run_backtest(execution=…)`, `lag_positions`.
-- [ ] C27 `preprocessing.load_ohlc_snapshot` + controlli; snapshot dei Close invariato.
-- [ ] C41–C42 backtest per ogni esecuzione, colonna `Execution`.
+- [x] C8–C9 `run_backtest(execution=…)`, `lag_positions`.
+- [x] C27 `preprocessing.load_ohlc_snapshot` + controlli; snapshot dei Close invariato.
+- [x] C41–C42 backtest per ogni esecuzione, colonna `Execution`.
 
 ### RCS (K14)
-- [ ] C13 `exposure_benchmarks`; C14 `performance_by_regime`; C15 alpha rispetto al long filtrato; C17 docstring.
+- [x] C13 `exposure_benchmarks`; C14 `performance_by_regime`; C15 alpha rispetto al long filtrato; C17 docstring.
 
 ### Statistica D (K02, K15, K27, K28, K38)
-- [ ] C11 `architecture_vs_regime_D` riscritta con un unico operatore per stima e bootstrap; C12; C45 output.
+- [x] C11 `architecture_vs_regime_D` riscritta con un unico operatore per stima e bootstrap; C12; C45 output.
 
 ### GARCH (K01, K06, K25)
-- [ ] C31–C32 `models/garch.py`; C24 `dm_test_loss`; C40 sezione GARCH di `main.py`.
+- [x] C31–C32 `models/garch.py`; C24 `dm_test_loss`; C40 sezione GARCH di `main.py`.
 
 ### Roll (K03, K23)
-- [ ] C25 `roll_window_mask`; C44 `roll_sensitivity.csv`; C47 `tools/build_rolled_series.py`; C26 docstring.
+- [x] C25 `roll_window_mask`; C44 `roll_sensitivity.csv`; C47 `tools/build_rolled_series.py`; C26 docstring.
 
 ### Reti (K08, K09, K11, K29)
-- [ ] C28–C29 calendario uniforme; C33 argomento `seed`; C34 `run_tcn31_fold`; C35 varianze del positional encoding; C37 flag `--dl-seed`, `--robustness tcn31`; C48 `tools/summarize_robustness.py`.
+- [x] C28 calendario uniforme (C29, il conteggio dei giorni con calendario diverso, non serve più: dopo l'uniformazione la differenza non esiste); C33 argomento `seed`; C34 `run_tcn31_fold`; C35 varianze del positional encoding; C37 flag `--dl-seed`, `--robustness tcn31`; C48 `tools/summarize_robustness.py`.
 
 ### Pulizia
-- [ ] C18–C19, C38 ADF solo sui log-rendimenti, colonna «Reject unit root (5%)».
-- [ ] C20–C21 HAC: docstring e autocovarianza standard.
-- [ ] C30, C46 commenti e terminologia; C36 manifest con le scelte; C39 `RMSE pooled`.
+- [x] C18–C19, C38 ADF solo sui log-rendimenti, colonna «Reject unit root (5%)».
+- [x] C20–C21 HAC: docstring e autocovarianza standard.
+- [x] C30, C46 commenti e terminologia; C36 manifest con le scelte; C39 `RMSE pooled`.
 
 ### Colab ed esecuzione
-- [ ] C56 notebook: cella dati, branch, cartelle, celle per seed e TCN-31.
-- [ ] C57 risultati del 27/9 conservati in `results_run_20260927/`.
+- [x] C56 notebook: cella dati, branch, cartelle, celle per seed e TCN-31.
+- [x] C57 risultati del 27/9 conservati in `results_run_20260927/`.
 
-## Verifica prima dell'esecuzione su Colab
-- [ ] Tutti i test verdi.
-- [ ] `--smoke` completo su CPU.
-- [ ] Ripasso delle previsioni del 27/9 nel nuovo post-processing: le grandezze non toccate (Sharpe, alpha, DM, turnover) devono restare identiche.
+## Verifica prima dell'esecuzione su Colab (fatta il 25/10/2026, commit di questo branch)
+- [x] Tutti i test verdi.
+- [x] `--smoke` completo su CPU.
+- [x] Ripasso delle previsioni del 27/9 nel nuovo post-processing: Sharpe, turnover, giorni di roll, DA, alpha e intervalli bootstrap identici; MDD diverso solo nei 2 casi con perdita prima del primo picco; Calmar cambiato come atteso; DM con differenza massima 0,031 (autocovarianza standard), stessi 2 test significativi dopo Holm.
+
+## Da fare su Colab (vedi colab_run.ipynb)
+1. Fase A: `tools/fetch_ohlc.py` e `tools/build_rolled_series.py`; i file in `data/` vanno aggiunti al branch con un commit.
+2. Fase B: `python main.py` dal commit che contiene i dati.
+3. Fase C: `--robustness tcn31` e `--dl-seed 1…4` dallo stesso commit.
+4. Fase D: `tools/summarize_robustness.py`; i risultati vanno in `CODE/results/`.
