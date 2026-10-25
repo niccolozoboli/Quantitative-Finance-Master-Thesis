@@ -22,7 +22,7 @@ from src.statistical_tests import (random_walk_forecast,
                                     build_dm_table,
                                     build_adf_table,
                                     da_test_hac, da_test_centred_bootstrap,
-                                    MIN_ACTIVE_DA)
+                                    dm_test_loss, MIN_ACTIVE_DA)
 from src.backtesting       import (run_backtest, regime_conditional_strategy,
                                     backtest_summary_table, block_bootstrap_ci,
                                     architecture_vs_regime_D, estimate_alpha,
@@ -37,7 +37,7 @@ from src.visualization     import (
 )
 
 from src.models.arima     import run_arima_fold
-from src.models.garch     import run_garch_fold
+from src.models.garch     import run_garch_fold, qlike_loss, GARCH_DISTS
 from src.models.ml_models import (run_rf_fold, run_xgboost_fold,
                                    run_gbm_fold, run_svr_fold, run_dt_fold)
 from src.models import dl_models
@@ -432,7 +432,8 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
                            # il loop principale (vedi sezione dedicata sotto)
     asset_data      = {}   # per la statistica D (RQ3) — pooled sui 4 asset,
                            # anche questa serve solo a fine loop
-    garch_rows_all  = []   # C5 — results/garch_volatility.csv
+    garch_rows_all  = []   # results/garch_volatility.csv (per Dist e fold)
+    garch_dm_rows   = []   # K06 — results/garch_dm_qlike.csv
     dl_epoch_rows   = []   # B4 — results/dl_best_epochs.csv
 
     # ── Carica tutti gli asset prima del loop ─────────────────────────────────
@@ -571,26 +572,55 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
                       f"RMSE={metrics['RMSE']:.6f}  "
                       f"MAE={metrics['MAE']:.6f}")
 
-        # ── GARCH ─────────────────────────────────────────────────────────────
+        # ── GARCH (benchmark di volatilità, commenti K01, K06) ─────────────────
+        # Gaussiano = specificazione di riferimento; Student-t = unico
+        # competitore, per la robustezza. Le sigma_hat giornaliere sono
+        # salvate in garch_forecasts_<asset>.csv.
         print(f"\n  [GARCH — Volatilità]")
         g_real_all, g_fc_all, g_dates_all = [], [], []
-        for fi, (train_idx, test_idx) in enumerate(folds):
-            try:
-                gd, gr, gf, gp = run_garch_fold(df, train_idx, test_idx)
-                g_real_all.append(gr)
-                g_fc_all.append(gf)
-                g_dates_all.append(df.index[test_idx])
-                gm = compute_metrics(gr, gf)
-                print(f"    Fold {fi+1}: Vol-RMSE={gm['RMSE']:.6f}  "
-                      f"persistence={gp['persistence']:.4f}")
-                garch_rows_all.append({           # C5
-                    "Asset": metal_name, "Fold": fi + 1,
-                    "alpha": gp["alpha"], "beta": gp["beta"],
-                    "persistence": gp["persistence"],
-                    "loss_RMSE": gm["RMSE"],
-                })
-            except Exception as e:
-                print(f"    Fold {fi+1}: GARCH ERRORE {e}")
+        g_fc_rows = []
+        for dist in GARCH_DISTS:
+            for fi, (train_idx, test_idx) in enumerate(folds):
+                try:
+                    gd, gr, gf, gp = run_garch_fold(df, train_idx, test_idx, dist=dist)
+                    r_fold = df["log_return"].values[test_idx]
+                    if dist == "normal":
+                        g_real_all.append(gr)
+                        g_fc_all.append(gf)
+                        g_dates_all.append(df.index[test_idx])
+                    gm = compute_metrics(gr, gf)
+                    se_scaled = float(np.sqrt(np.mean((gf - gr * np.sqrt(np.pi / 2)) ** 2)))
+                    ql = float(np.mean(qlike_loss(gf, r_fold)))
+                    print(f"    [{dist:6s}] Fold {fi+1}: RMSE vs |r|={gm['RMSE']:.6f}  "
+                          f"vs |r|sqrt(pi/2)={se_scaled:.6f}  QLIKE={ql:.4f}  "
+                          f"persistence={gp['persistence']:.4f}")
+                    garch_rows_all.append({
+                        "Asset": metal_name, "Dist": dist, "Fold": fi + 1,
+                        "alpha": gp["alpha"], "beta": gp["beta"],
+                        "persistence": gp["persistence"], "nu": gp["nu"],
+                        "loss_RMSE": gm["RMSE"],
+                        "loss_RMSE_scaled_proxy": se_scaled,
+                        "QLIKE": ql,
+                    })
+                    for d, sg, rr in zip(df.index[test_idx], gf, r_fold):
+                        g_fc_rows.append({"Asset": metal_name, "Dist": dist,
+                                          "Fold": fi + 1, "Date": d,
+                                          "sigma_hat": sg, "r": rr})
+                except Exception as e:
+                    print(f"    [{dist}] Fold {fi+1}: GARCH ERRORE {e}")
+        g_fc_df = pd.DataFrame(g_fc_rows)
+        g_fc_df.to_csv(f"{RESULTS_DIR}/garch_forecasts_{metal_name}.csv", index=False)
+        if set(g_fc_df.get("Dist", [])) == set(GARCH_DISTS):
+            piv = g_fc_df.pivot_table(index="Date", columns="Dist",
+                                      values=["sigma_hat", "r"])
+            ql_n = qlike_loss(piv["sigma_hat"]["normal"].values, piv["r"]["normal"].values)
+            ql_t = qlike_loss(piv["sigma_hat"]["t"].values, piv["r"]["t"].values)
+            dm_q = dm_test_loss(ql_n, ql_t)
+            garch_dm_rows.append({"Asset": metal_name,
+                                  "Mean QLIKE normal": float(np.mean(ql_n)),
+                                  "Mean QLIKE t": float(np.mean(ql_t)), **dm_q})
+            print(f"    DM QLIKE normale vs t: DM={dm_q['DM Stat']:.3f}  "
+                  f"p={dm_q['p-value']:.4f}  (DM < 0: normale migliore)")
 
         # ── Aggregazione metriche ─────────────────────────────────────────────
         print(f"\n  ── Risultati Aggregati ──")
@@ -785,8 +815,9 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
                 save_path=p("04_volatility_regimes",
                             f"{metal_name}_GARCH_volatility_forecast_vs_realized"))
 
-    # ── C5: GARCH volatility CSV ────────────────────────────────────────────────
+    # ── GARCH: parametri e loss per fold, DM sulla QLIKE ──────────────────────
     pd.DataFrame(garch_rows_all).to_csv(f"{RESULTS_DIR}/garch_volatility.csv", index=False)
+    pd.DataFrame(garch_dm_rows).to_csv(f"{RESULTS_DIR}/garch_dm_qlike.csv", index=False)
 
     # ── B4: epoche migliori (e*) per fold/modello/asset DL ─────────────────────
     pd.DataFrame(dl_epoch_rows).to_csv(f"{RESULTS_DIR}/dl_best_epochs.csv", index=False)

@@ -237,3 +237,26 @@ def test_k14_exposure_benchmarks():
     assert per_model.loc["Always long", "Identical to Long Filtered"]
     assert summary["Sharpe Long Filtered"] == pytest.approx(rcs_long["Sharpe Ratio"])
     assert 0 < per_model.loc["Always long", "p_emp vs Random Filtered"] <= 1
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# K06 / K01 — GARCH: QLIKE e innovazioni Student-t
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_k06_qlike_formula_and_zero_return():
+    from src.models.garch import qlike_loss
+    s = np.array([0.01, 0.02]); r = np.array([0.0, 0.03])
+    assert np.allclose(qlike_loss(s, r), np.log(s ** 2) + r ** 2 / s ** 2)
+    assert np.isfinite(qlike_loss(s, r)).all()
+
+
+@pytest.mark.parametrize("dist", ["normal", "t"])
+def test_k01_garch_fold_runs_for_both_distributions(dist):
+    from src.models.garch import run_garch_fold
+    rng = np.random.default_rng(8)
+    n = 600
+    df = pd.DataFrame({"log_return": rng.standard_t(5, n) * 0.01},
+                      index=pd.bdate_range("2020-01-01", periods=n))
+    dates, real, fc, params = run_garch_fold(df, np.arange(590), np.arange(590, 593), dist=dist)
+    assert len(fc) == 3 and (fc > 0).all()
+    assert (params["nu"] is not None) == (dist == "t")
