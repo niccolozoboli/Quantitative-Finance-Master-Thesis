@@ -1,0 +1,88 @@
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: GCQ25.CMX"}}}
+
+1 Failed download:
+['GCQ25.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: GCV25.CMX"}}}
+
+1 Failed download:
+['GCV25.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['GCG26.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['GCJ26.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['GCM26.CMX']: possibly delisted; no timezone found
+Gold: contratti ['GCG26.CMX', 'GCJ26.CMX', 'GCM26.CMX', 'GCQ25.CMX', 'GCV25.CMX', 'GCZ25.CMX'], date OOS senza rendimento del contratto: 168/210
+  Gold: serie NON scritta — main.py userà solo la sensitivity sui giorni di roll.
+
+1 Failed download:
+['SIU25.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['SIF26.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['SIH26.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['SIK26.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['SIN26.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+Silver: contratti ['SIF26.CMX', 'SIH26.CMX', 'SIK26.CMX', 'SIN26.CMX', 'SIU25.CMX', 'SIZ25.CMX'], date OOS senza rendimento del contratto: 147/210
+  Silver: serie NON scritta — main.py userà solo la sensitivity sui giorni di roll.
+
+1 Failed download:
+['HGU25.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['HGH26.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['HGK26.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['HGN26.CMX']: YFTzMissingError('possibly delisted; no timezone found')
+Copper: contratti ['HGH26.CMX', 'HGK26.CMX', 'HGN26.CMX', 'HGU25.CMX', 'HGZ25.CMX'], date OOS senza rendimento del contratto: 147/210
+  Copper: serie NON scritta — main.py userà solo la sensitivity sui giorni di roll.
+
+1 Failed download:
+['PLV25.NYM']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['PLF26.NYM']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['PLJ26.NYM']: YFTzMissingError('possibly delisted; no timezone found')
+
+1 Failed download:
+['PLN26.NYM']: YFTzMissingError('possibly delisted; no timezone found')
+Platinum: contratti ['PLF26.NYM', 'PLJ26.NYM', 'PLN26.NYM', 'PLV25.NYM'], date OOS senza rendimento del contratto: 210/210
+  Platinum: serie NON scritta — main.py userà solo la sensitivity sui giorni di roll.
+
+Esito del download dei contratti scritto in /content/Quantitative-Finance-Master-Thesis/CODE/data/rolled_series_report.csv
+   Asset  Contract  N Prices Downloaded First Price Date Last Price Date  N OOS Days Held  N OOS Days With Return  Complete
+    Gold GCQ25.CMX                    0             None            None               21                       0     False
+    Gold GCV25.CMX                    0             None            None               42                       0     False
+    Gold GCZ25.CMX                  133       2025-06-23      2025-12-29               42                      42      True
+    Gold GCG26.CMX                    0             None            None               42                       0     False
+    Gold GCJ26.CMX                    0             None            None               41                       0     False
+    Gold GCM26.CMX                    0             None            None               22                       0     False
+  Silver SIU25.CMX                    0             None            None               42                       0     False
+  Silver SIZ25.CMX                  133       2025-06-23      2025-12-29               63                      63      True
+  Silver SIF26.CMX                    0             None            None               22                       0     False
+  Silver SIH26.CMX                    0             None            None               39                       0     False
+  Silver SIK26.CMX                    0             None            None               43                       0     False
+  Silver SIN26.CMX                    0             None            None                1                       0     False
+  Copper HGU25.CMX                    0             None            None               42                       0     False
+  Copper HGZ25.CMX                  133       2025-06-23      2025-12-29               63                      63      True
+  Copper HGH26.CMX                    0             None            None               61                       0     False
+  Copper HGK26.CMX                    0             None            None               43                       0     False
+  Copper HGN26.CMX                    0             None            None                1                       0     False
+Platinum PLV25.NYM                    0             None            None               63                       0     False
+Platinum PLF26.NYM                    0             None            None               64                       0     False
+Platinum PLJ26.NYM                    0             None            None               61                       0     False
+Platinum PLN26.NYM                    0             None            None               22                       0     False

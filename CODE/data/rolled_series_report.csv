@@ -1,0 +1,22 @@
+Asset,Contract,N Prices Downloaded,First Price Date,Last Price Date,N OOS Days Held,N OOS Days With Return,Complete
+Gold,GCQ25.CMX,0,,,21,0,False
+Gold,GCV25.CMX,0,,,42,0,False
+Gold,GCZ25.CMX,133,2025-06-23,2025-12-29,42,42,True
+Gold,GCG26.CMX,0,,,42,0,False
+Gold,GCJ26.CMX,0,,,41,0,False
+Gold,GCM26.CMX,0,,,22,0,False
+Silver,SIU25.CMX,0,,,42,0,False
+Silver,SIZ25.CMX,133,2025-06-23,2025-12-29,63,63,True
+Silver,SIF26.CMX,0,,,22,0,False
+Silver,SIH26.CMX,0,,,39,0,False
+Silver,SIK26.CMX,0,,,43,0,False
+Silver,SIN26.CMX,0,,,1,0,False
+Copper,HGU25.CMX,0,,,42,0,False
+Copper,HGZ25.CMX,133,2025-06-23,2025-12-29,63,63,True
+Copper,HGH26.CMX,0,,,61,0,False
+Copper,HGK26.CMX,0,,,43,0,False
+Copper,HGN26.CMX,0,,,1,0,False
+Platinum,PLV25.NYM,0,,,63,0,False
+Platinum,PLF26.NYM,0,,,64,0,False
+Platinum,PLJ26.NYM,0,,,61,0,False
+Platinum,PLN26.NYM,0,,,22,0,False
