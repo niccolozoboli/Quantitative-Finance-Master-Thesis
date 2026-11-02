@@ -11,15 +11,21 @@ GC=F/SI=F/HG=F/PL=F su Yahoo Finance sono serie continue front-month NON
 back-adjusted (auto_adjust=True non fa nulla di rilevante per i futures:
 niente dividendi/split). Yahoo non pubblica la propria metodologia di
 switch del contratto sottostante. La ricostruzione da singoli contratti
-(Opzione 1, valutata e scartata — vedi discussione A4-A5) non è
-praticabile con i dati liberamente disponibili per l'intero periodo
-2010-2026: Yahoo non ha storico dei contratti scaduti prima di ~2020
-(verificato: GCZ25.CMX disponibile dal 2020, GCZ12.CMX/GCZ10.CMX assenti).
+per l'intero periodo 2010-2026 non è praticabile con i dati liberamente
+disponibili (Yahoo non ha lo storico dei contratti scaduti prima di ~2020).
 
-Si adotta quindi l'Opzione 2: la serie GC=F/SI=F/HG=F/PL=F viene usata
-così com'è, con un CALENDARIO DI ROLL sovrapposto, costruito ex ante dalle
-specifiche ufficiali CME/COMEX (non dalle date di splice reali di Yahoo,
-che restano sconosciute). Il costo di roll (2c|w_t|) viene applicato sulle
+Specificazione principale: la serie GC=F/SI=F/HG=F/PL=F così com'è, con
+un CALENDARIO DI ROLL sovrapposto, costruito ex ante dalle specifiche
+ufficiali CME/COMEX (non dalle date di splice reali di Yahoo, che restano
+sconosciute).
+
+Controlli richiesti dal relatore (commento K03, ottobre 2026):
+  - serie realmente rollata dai contratti singoli per il solo periodo
+    fuori campione, se disponibili (tools/build_rolled_series.py, che usa
+    held_contracts qui sotto); confrontata con il backtest corrente;
+  - in ogni caso, sensitivity escludendo i giorni sospetti di cambio
+    contratto (roll_window_mask) e documentazione empirica delle
+    discontinuità (main.py, roll_sensitivity.csv e roll_discontinuities.csv). Il costo di roll (2c|w_t|) viene applicato sulle
 date di questo calendario come approssimazione dichiarata del costo reale
 di rollover di una posizione fisica sul front contract — non una
 ricostruzione esatta di quale contratto Yahoo abbia quotato giorno per
@@ -145,3 +151,49 @@ def roll_mask(asset_name: str, dates: pd.DatetimeIndex) -> np.ndarray:
     matched_dates = sorted_dates[pos[valid]]
     mask |= dates.isin(matched_dates)
     return mask
+
+
+def post_roll_mask(asset_name: str, dates: pd.DatetimeIndex) -> np.ndarray:
+    """
+    True in posizione i se dates[i-1] è un giorno di roll: è il rendimento
+    a cavallo del cambio di contratto, lo stesso su cui run_backtest
+    addebita il costo di roll.
+    """
+    on_date = roll_mask(asset_name, dates)
+    out = np.zeros(len(on_date), dtype=bool)
+    out[1:] = on_date[:-1]
+    return out
+
+
+def roll_window_mask(asset_name: str, dates: pd.DatetimeIndex,
+                     k: int = 1) -> np.ndarray:
+    """
+    Giorni sospetti di cambio contratto: il rendimento post-roll e i k
+    giorni di borsa prima e dopo (il provider può cambiare contratto in
+    date vicine ma non identiche al calendario modellato).
+    """
+    base = post_roll_mask(asset_name, dates)
+    out = base.copy()
+    for shift in range(1, k + 1):
+        out[:-shift] |= base[shift:]
+        out[shift:] |= base[:-shift]
+    return out
+
+
+def held_contracts(asset_name: str, dates: pd.DatetimeIndex) -> list:
+    """
+    Contratto (anno, mese di consegna) detenuto per il rendimento della
+    data dates[i], cioè quello in portafoglio dalla chiusura del giorno
+    precedente: il primo contratto del ciclo la cui data di roll è >=
+    dates[i] (alla chiusura della data di roll si passa al contratto
+    successivo, coerente con roll_mask e con il costo di roll).
+    """
+    dates = pd.DatetimeIndex(dates)
+    years = range(dates.min().year - 1, dates.max().year + 2)
+    contracts = sorted(
+        (_first_notice_day(y, m) - pd.offsets.BDay(1), (y, m))
+        for y in years for m in DELIVERY_MONTHS[asset_name])
+    out = []
+    for d in dates:
+        out.append(next(c for rd, c in contracts if rd >= d))
+    return out

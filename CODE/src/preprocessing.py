@@ -91,6 +91,92 @@ def load_and_preprocess(name: str, ticker: str,
     return df
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Snapshot OHLC — esecuzione all'apertura successiva (commento K13)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Lo snapshot dei Close (CODE/data/<ticker>.csv) NON viene toccato: target,
+# feature e backtest principale restano identici. Per la variante di
+# esecuzione all'apertura si usa uno snapshot SEPARATO
+# CODE/data/<ticker>_ohlc.csv, scaricato una sola volta con
+# tools/fetch_ohlc.py (su Colab) e versionato. L'esecuzione principale non
+# scarica mai nulla: se il file manca, o se non supera i controlli di
+# validate_ohlc, la variante "open" non viene calcolata e il manifest lo
+# registra.
+
+OHLC_END = "2026-05-08"   # oltre END: serve l'apertura del giorno dopo l'ultimo OOS
+
+
+def _ohlc_path(ticker: str) -> str:
+    return os.path.join(_DATA_DIR, f"{ticker}_ohlc.csv")
+
+
+def download_ohlc(ticker: str, start: str, end: str = OHLC_END) -> pd.DataFrame:
+    df = yf.download(ticker, start=start, end=end,
+                     auto_adjust=True, progress=False)
+    if df.empty:
+        raise ValueError(f"No data for {ticker}")
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df.index = pd.to_datetime(df.index)
+    return df[["Open", "High", "Low", "Close"]].copy()
+
+
+def load_ohlc_snapshot(ticker: str):
+    """Snapshot OHLC se presente, altrimenti None (nessun download qui)."""
+    path = _ohlc_path(ticker)
+    if not os.path.exists(path):
+        return None
+    return pd.read_csv(path, index_col=0, parse_dates=True)
+
+
+def validate_ohlc(ohlc: pd.DataFrame, close_df: pd.DataFrame,
+                  oos_dates: pd.DatetimeIndex, rel_tol: float = 1e-6) -> dict:
+    """
+    Controlli prima di usare l'apertura come prezzo di esecuzione:
+      1. ogni data OOS e il giorno di borsa successivo all'ultima data OOS
+         sono presenti nello snapshot OHLC, con Open non mancante e > 0;
+      2. Low <= Open <= High in quelle date;
+      3. il Close OHLC coincide con lo snapshot dei Close nelle date OOS
+         (stessa serie del provider, nessuna revisione nel frattempo).
+    Ritorna {"ok": bool, "reason": str, ...}.
+    """
+    oos_dates = pd.DatetimeIndex(oos_dates)
+    if ohlc is None:
+        return {"ok": False, "reason": "snapshot OHLC assente"}
+    after = ohlc.index[ohlc.index > oos_dates.max()]
+    if len(after) == 0:
+        return {"ok": False, "reason": "manca il giorno di borsa successivo all'ultima data OOS"}
+    need = oos_dates.append(pd.DatetimeIndex([after.min()]))
+    missing = need.difference(ohlc.index)
+    if len(missing):
+        return {"ok": False, "reason": f"{len(missing)} date OOS assenti nello snapshot OHLC"}
+    sub = ohlc.loc[need]
+    if sub["Open"].isna().any() or (sub["Open"] <= 0).any():
+        return {"ok": False, "reason": "Open mancante o non positivo"}
+    bad_range = ((sub["Open"] < sub["Low"] - 1e-9) | (sub["Open"] > sub["High"] + 1e-9)).sum()
+    if bad_range:
+        return {"ok": False, "reason": f"Open fuori da [Low, High] in {int(bad_range)} date"}
+    c_old = close_df["Close"].reindex(oos_dates)
+    c_new = ohlc["Close"].reindex(oos_dates)
+    rel = (c_new / c_old - 1).abs()
+    if rel.isna().any() or (rel > rel_tol).any():
+        return {"ok": False, "reason": f"Close diverso dallo snapshot in {int((rel > rel_tol).sum())} date OOS"}
+    return {"ok": True, "reason": "ok", "next_day_after_oos": str(after.min().date())}
+
+
+def open_to_open_returns(ohlc: pd.DataFrame, dates: pd.DatetimeIndex) -> np.ndarray:
+    """
+    R^oo per ciascuna data di `dates`: O_{giorno successivo} / O_{data} - 1,
+    cioè il rendimento di una posizione aperta all'apertura della data e
+    chiusa all'apertura del giorno di borsa successivo. NaN se non disponibile.
+    """
+    o = ohlc["Open"].astype(float)
+    nxt = o.shift(-1)
+    r = (nxt / o - 1).reindex(pd.DatetimeIndex(dates))
+    return r.values.astype(float)
+
+
 def reconstruct_prices(last_known_price: float,
                         predicted_log_returns: np.ndarray) -> np.ndarray:
     """

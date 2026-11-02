@@ -201,13 +201,28 @@ def test_d_arima_one_step_uses_realized_test_data():
 def test_e_metrics_econ_mdd_calmar_compounded_wealth():
     y = np.array([0.1, -0.5, 0.2])
 
-    # W = [1.1, 0.55, 0.66], picco 1.1 → MDD = 1 - 0.55/1.1 = 0.5
+    # W = [1, 1.1, 0.55, 0.66], picco 1.1 → MDD = 1 - 0.55/1.1 = 0.5
     mdd = metrics_econ.max_drawdown(y)
     assert mdd == pytest.approx(0.5, abs=1e-6)
 
-    # Calmar = mean(y)*252 / MDD
+    # Calmar (commento K05 del relatore) = r_ann / MDD, con
+    # r_ann = W_T^(252/T) - 1 rendimento composto annualizzato
     calmar = metrics_econ.calmar_ratio(y, mdd)
-    assert calmar == pytest.approx(np.mean(y) * 252 / 0.5, abs=1e-6)
+    assert calmar == pytest.approx((0.66 ** (252 / 3) - 1) / 0.5, rel=1e-9)
+
+
+def test_e_mdd_counts_loss_on_first_day_from_w0():
+    # W_0 = 1: una perdita del 10% il primo giorno è un drawdown del 10%
+    # (con il picco calcolato da W_1 sarebbe stato 0).
+    y = np.array([-0.1, 0.05])
+    assert metrics_econ.max_drawdown(y) == pytest.approx(0.1, abs=1e-12)
+    assert metrics_econ.wealth_path(y)[0] == 1.0
+
+
+def test_e_annualised_return_is_compounded():
+    y = np.full(252, 0.001)
+    assert metrics_econ.annualised_return(y) == pytest.approx(1.001 ** 252 - 1, rel=1e-12)
+    assert np.isnan(metrics_econ.annualised_return(np.array([])))
 
 
 # ─────────────────────────────────────────────────────────────────────────

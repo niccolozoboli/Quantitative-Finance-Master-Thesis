@@ -14,7 +14,6 @@ Design:
 
 Riferimenti:
 - Momentum: Jegadeesh & Titman (1993), Asness et al. (2013)
-- Mean reversion: De Bondt & Thaler (1985)
 - Vol ratio come regime proxy: Ang & Timmermann (2012)
 """
 
@@ -66,28 +65,31 @@ def build_ml_features(df: pd.DataFrame,
         Fonte: letteratura momentum trading (Jegadeesh & Titman 1993).
         In commodity, momentum a 1-3 mesi è ampiamente documentato.
 
-    Gruppo 4 — Mean reversion signal
-        z_score_21: z-score del rendimento corrente rispetto alla media 21gg
-        Valori estremi (>2 o <-2) segnalano potenziale mean reversion.
-        Utile nei regimi stabili dove il prezzo tende a tornare alla media.
+    Gruppo 4 — Standardised return-deviation signal
+        z_score_21: z-score dell'ultimo rendimento rispetto alla media e
+        alla deviazione standard degli ultimi 21 giorni. Misura quanto il
+        rendimento è insolito; non è di per sé evidenza di mean reversion.
 
     Gruppo 5 — Volatility regime proxy
         vol_ratio: rolling_std_5 / rolling_std_21
         >1 → volatilità in espansione (regime volatile in arrivo)
         <1 → volatilità in contrazione (regime stabile)
-        Permette ai modelli ML di condizionarsi sul regime SENZA usare
-        la classificazione regime (che usa dati futuri per i percentili).
+        Proxy continuo del contesto di volatilità, standardizzato con
+        parametri stimati su T_k; non usa la classificazione discreta dei
+        regimi.
 
     Gruppo 6 — Cross-asset features (opzionale)
-        gs_spread:    Gold - Silver log-return (divergenza metalli preziosi)
-        gc_spread:    Gold - Copper log-return (precious vs industrial)
+        gs_spread:    log-rendimento Gold - Silver (differenziale di rendimento)
+        gc_spread:    log-rendimento Gold - Copper (indicatore candidato
+                      prezioso vs industriale, non un fattore validato)
         Richiedono i DataFrame degli altri asset passati come cross_asset_dfs.
         Se non disponibili, queste feature vengono saltate silenziosamente.
 
     Gruppo 7 — Calendar features
-        dow_sin, dow_cos: giorno della settimana codificato con sin/cos
-        Cattura effetti calendario (Monday effect, weekend effect)
-        documentati nelle commodity futures.
+        dow_sin, dow_cos: giorno della settimana del giorno TARGET
+        codificato con sin/cos (noto in anticipo dal calendario di borsa);
+        lo stesso dato entra nell'ultima riga della finestra delle reti
+        (build_dl_features), così la feature è identica tra classi di modelli.
 
     Parameters:
         df              : DataFrame con colonne 'log_return' (e 'Close')
@@ -119,7 +121,9 @@ def build_ml_features(df: pd.DataFrame,
     for horizon in [5, 21, 63]:
         df[f"mom_{horizon}"] = r.shift(1).rolling(horizon).sum()
 
-    # ── Gruppo 4: Mean reversion (z-score 21gg) ───────────────────────────────
+    # ── Gruppo 4: Standardised return-deviation signal (z-score 21gg) ─────────
+    # Misura quanto è insolito l'ultimo rendimento rispetto alla distribuzione
+    # recente; non è di per sé evidenza di mean reversion del prezzo.
     roll_mean_21 = r.shift(1).rolling(21).mean()
     roll_std_21  = r.shift(1).rolling(21).std()
     df["z_score_21"] = (r.shift(1) - roll_mean_21) / (roll_std_21 + 1e-8)
@@ -131,17 +135,16 @@ def build_ml_features(df: pd.DataFrame,
 
     # ── Gruppo 6: Cross-asset features (se disponibili) ───────────────────────
     if cross_asset_dfs is not None:
-        # Gold-Silver spread: divergenza tra i due metalli preziosi
-        # Quando il Gold sale e Silver scende (o viceversa), segnala
-        # disaccoppiamento che spesso precede un riallineamento
+        # Gold-Silver return differential: differenza dei log-rendimenti
+        # contemporanei (non uno spread di prezzo stazionario)
         if "Gold" in cross_asset_dfs and "Silver" in cross_asset_dfs:
             gold_r   = cross_asset_dfs["Gold"]["log_return"].reindex(df.index)
             silver_r = cross_asset_dfs["Silver"]["log_return"].reindex(df.index)
             df["gs_spread"] = gold_r.shift(1) - silver_r.shift(1)
 
-        # Gold-Copper spread: precious vs industrial
-        # Proxy per risk-on/risk-off: quando Copper sale più di Gold,
-        # il mercato è in modalità risk-on (crescita economica attesa)
+        # Gold-Copper return differential: indicatore candidato della
+        # performance relativa prezioso vs industriale, non un fattore
+        # risk-on/risk-off validato
         if "Gold" in cross_asset_dfs and "Copper" in cross_asset_dfs:
             gold_r   = cross_asset_dfs["Gold"]["log_return"].reindex(df.index)
             copper_r = cross_asset_dfs["Copper"]["log_return"].reindex(df.index)
@@ -289,7 +292,7 @@ def build_dl_features(df: pd.DataFrame,
     features["mom_21"] = r.rolling(21).sum()
     features["mom_63"] = r.rolling(63).sum()
 
-    # Feature 5: Mean reversion z-score
+    # Feature 5: Standardised return-deviation signal (z-score)
     mu  = r.rolling(21).mean()
     sig = r.rolling(21).std()
     features["z_score_21"] = (r - mu) / (sig + 1e-8)
@@ -311,13 +314,27 @@ def build_dl_features(df: pd.DataFrame,
             copper_r = cross_asset_dfs["Copper"]["log_return"].reindex(df.index)
             features["gc_spread"] = gold_r - copper_r
 
-    # Feature 9-10: Calendar encoding
-    dow = df.index.dayofweek.astype(float)
-    features["dow_sin"] = np.sin(2 * np.pi * dow / 5)
-    features["dow_cos"] = np.cos(2 * np.pi * dow / 5)
+    # Feature 9-10: Calendar encoding — uniformato ai modelli ML (commento
+    # K11 del relatore). La riga u codifica il weekday del giorno di borsa
+    # SUCCESSIVO, delta_{u+1}: l'ultima riga della finestra (u = t) porta
+    # quindi delta_{t+1}, il weekday del giorno target, come la riga del
+    # target nei modelli ML (build_ml_features). Il calendario di borsa è
+    # noto in anticipo: nessun rendimento futuro entra nella feature.
+    # Per l'ultima riga della serie il giorno successivo non è osservato e
+    # si usa il giorno lavorativo successivo (così il dropna sotto non
+    # elimina l'ultimo target).
+    features[["dow_sin", "dow_cos"]] = _next_day_calendar(df.index)
 
     features.dropna(inplace=True)
     return features
+
+
+def _next_day_calendar(index: pd.DatetimeIndex) -> np.ndarray:
+    """(sin, cos) di 2*pi*delta/5 con delta = weekday del giorno di borsa successivo."""
+    index = pd.DatetimeIndex(index)
+    nxt = index[1:].append(pd.DatetimeIndex([index[-1] + pd.offsets.BDay(1)]))
+    dow = nxt.dayofweek.astype(float)
+    return np.column_stack([np.sin(2 * np.pi * dow / 5), np.cos(2 * np.pi * dow / 5)])
 
 
 def prepare_dl_fold(df: pd.DataFrame,
