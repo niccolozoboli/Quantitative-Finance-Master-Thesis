@@ -12,7 +12,7 @@ all'inventario dei commenti (K01–K15 = i 15 commenti in verde).
 
 | Punto | Scelta | Strada del relatore |
 |---|---|---|
-| Timing (K13) | Esecuzione principale `close` (idealizzazione dichiarata); sensitivity `lag1` sempre; `open` solo se lo snapshot OHLC supera i controlli | «spostare l'esecuzione al primo prezzo disponibile» / «sensitivity con un ritardo di un giorno» |
+| Timing (K13) | Esecuzione principale `close` (idealizzazione dichiarata); sensitivity `lag1` sempre; `open` solo se lo snapshot OHLC supera i controlli. Regola di lettura: un risultato economico conta solo se presente anche nella variante eseguibile (`open` per oro, argento e rame; `lag1` per il platino, le cui aperture sono in gran parte barre piatte; `lag1` anche se `open` manca) | «spostare l'esecuzione al primo prezzo disponibile» / «sensitivity con un ritardo di un giorno» |
 | Test DA (K04) | Test HAC su h_t − 1/2 (principale) + bootstrap a blocchi centrato (controllo); non calcolato se i giorni attivi sono < 30 | «Implementa il test sotto il nullo» |
 | Holm (K18) | 5 famiglie principali: DM, alpha statica, alpha RCS, DA statica, DA RCS. Famiglie di sensitivity separate | Blu §1.3 / §3.5 |
 | Statistica D (K15, K02) | Principale: portafoglio equal-weight per data, con gli asset nel regime g; controlli: D per asset aggregata e decomposizione a due fattori | «Scegli una delle due costruzioni» + controlli suggeriti |
@@ -42,6 +42,8 @@ all'inventario dei commenti (K01–K15 = i 15 commenti in verde).
 - [x] C27 `preprocessing.load_ohlc_snapshot` + controlli; snapshot dei Close invariato.
 - [x] C41–C42 backtest per ogni esecuzione, colonna `Execution`.
 
+- [x] C58 `backtesting.executable_check` + `EXECUTABLE_REFERENCE`; `results/executable_check.csv`; regola nel manifest (revisione del testo del 2/11/2026, §1.2 e §1.3).
+
 ### RCS (K14)
 - [x] C13 `exposure_benchmarks`; C14 `performance_by_regime`; C15 alpha rispetto al long filtrato; C17 docstring.
 
@@ -53,6 +55,7 @@ all'inventario dei commenti (K01–K15 = i 15 commenti in verde).
 
 ### Roll (K03, K23)
 - [x] C25 `roll_window_mask`; C44 `roll_sensitivity.csv`; C47 `tools/build_rolled_series.py`; C26 docstring.
+- [x] C59 `build_rolled_series.contract_report`: `data/rolled_series_report.csv` con l'esito del download di ogni contratto, scritto sempre (traccia del tentativo citata in tesi). **Da rifare su Colab** e versionare il report.
 
 ### Reti (K08, K09, K11, K29)
 - [x] C28 calendario uniforme (C29, il conteggio dei giorni con calendario diverso, non serve più: dopo l'uniformazione la differenza non esiste); C33 argomento `seed`; C34 `run_tcn31_fold`; C35 varianze del positional encoding; C37 flag `--dl-seed`, `--robustness tcn31`; C48 `tools/summarize_robustness.py`.
@@ -72,7 +75,7 @@ all'inventario dei commenti (K01–K15 = i 15 commenti in verde).
 - [x] Ripasso delle previsioni del 27/9 nel nuovo post-processing: Sharpe, turnover, giorni di roll, DA, alpha e intervalli bootstrap identici; MDD diverso solo nei 2 casi con perdita prima del primo picco; Calmar cambiato come atteso; DM con differenza massima 0,031 (autocovarianza standard), stessi 2 test significativi dopo Holm.
 
 ## Da fare su Colab (vedi colab_run.ipynb)
-1. Fase A: `tools/fetch_ohlc.py` e `tools/build_rolled_series.py`; i file in `data/` vanno aggiunti al branch con un commit.
+1. Fase A: `tools/fetch_ohlc.py` (fatto, commit `3dfb188`) e `tools/build_rolled_series.py` (da rilanciare per ottenere `data/rolled_series_report.csv`); i file in `data/` vanno aggiunti al branch con un commit.
 2. Fase B: `python main.py` dal commit che contiene i dati.
 3. Fase C: `--robustness tcn31` e `--dl-seed 1…4` dallo stesso commit.
 4. Fase D: `tools/summarize_robustness.py`; i risultati vanno in `CODE/results/`.

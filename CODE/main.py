@@ -27,7 +27,8 @@ from src.backtesting       import (run_backtest, regime_conditional_strategy,
                                     backtest_summary_table, block_bootstrap_ci,
                                     architecture_vs_regime_D, estimate_alpha,
                                     two_way_decomposition, exposure_benchmarks,
-                                    performance_by_regime)
+                                    performance_by_regime, executable_check,
+                                    EXECUTABLE_REFERENCE)
 from src.visualization     import (
     plot_returns_forecast, plot_price_comparison,
     plot_all_models_prices, plot_garch_volatility,
@@ -98,6 +99,9 @@ def _run_config() -> dict:
     return {
         "execution_main": "close",
         "execution_sensitivity": list(SENSITIVITY_EXECUTIONS),
+        # K13: un risultato economico conta solo se presente anche nella
+        # variante eseguibile (executable_check.csv; "lag1" se "open" manca)
+        "executable_reference": dict(EXECUTABLE_REFERENCE),
         "da_test": "HAC on h_t - 1/2 (main) + centred block bootstrap (check)",
         "min_active_days_da": MIN_ACTIVE_DA,
         "holm_main_families": ["DM", "alpha static", "alpha RCS", "DA static", "DA RCS"],
@@ -1009,6 +1013,17 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
             backtest_summary_table(bt_all[execution]["rcs"][asset_name]).to_csv(
                 f"{RESULTS_DIR}/backtest_rcs{suffix}_{asset_name}.csv")
 
+    # ── K13: regola di lettura — risultato economico confermato nella
+    # variante eseguibile (apertura per oro, argento e rame; ritardo di un
+    # giorno per il platino). Confronto descrittivo, nessuna nuova Holm. ──
+    exec_check = executable_check(bt_all)
+    exec_check.to_csv(f"{RESULTS_DIR}/executable_check.csv", index=False)
+    print(f"  Regola eseguibile (K13): alpha statico robusto "
+          f"{int(exec_check['Alpha Static Robust'].sum())}/{len(exec_check)}, "
+          f"alpha RCS robusto {int(exec_check['Alpha RCS Robust'].sum())}/{len(exec_check)}, "
+          f"miglioramento RCS robusto "
+          f"{int(exec_check['RCS Improvement Robust'].sum())}/{len(exec_check)}")
+
     # ── K14: benchmark della regola di esposizione e performance per regime ───
     pd.DataFrame(bench_rows).to_csv(f"{RESULTS_DIR}/rcs_benchmarks.csv", index=False)
     pd.concat(bench_model_dfs, ignore_index=True).to_csv(
@@ -1154,6 +1169,7 @@ def run_pipeline(resume: bool = False, smoke: bool = False):
               "DM_test_<asset>.csv", "holm_families.csv",
               "backtest[_rcs]_<asset>.csv (esecuzione close)",
               "backtest[_rcs]_lag1_<asset>.csv, _open_, _rolled_ (sensitivity)",
+              "executable_check.csv (regola di lettura K13)",
               "rcs_benchmarks.csv, rcs_benchmarks_by_model.csv",
               "performance_by_regime.csv",
               "architecture_vs_regime_D.csv, sharpe_by_model_regime[_per_asset].csv,",

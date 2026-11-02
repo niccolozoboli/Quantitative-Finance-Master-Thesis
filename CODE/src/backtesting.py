@@ -359,11 +359,13 @@ def _D_operator(Y: dict, RG: np.ndarray, model_names: list, assets: list,
     identico per costruzione (commento K15).
 
     "portfolio" (principale): per modello m, regime g e data tau,
-        P_{m,g,tau} = media dei y_{m,i,tau} sugli asset i con g_{i,tau} = g,
+        Pi_{m,g,tau} = media dei y_{m,i,tau} sugli asset i con g_{i,tau} = g
+        (simbolo Pi in tesi, eq. D-portfolio, per non confonderlo con il
+        prezzo P_t),
     definita nelle date in cui almeno un asset è nel regime g. Se gli asset
     sono in regimi diversi nella stessa data, ciascuno entra nella cella del
     proprio regime: la data contribuisce a più celle, con sottoinsiemi
-    diversi di asset. S_{m,g} = SR_0 della serie P_{m,g,.} (un rendimento
+    diversi di asset. S_{m,g} = SR_0 della serie Pi_{m,g,.} (un rendimento
     per data, quindi l'annualizzazione con sqrt(252) è coerente).
     Cella valida se ha almeno `min_obs` date.
 
@@ -653,6 +655,81 @@ def performance_by_regime(results: dict, dates: pd.DatetimeIndex,
                          "Sharpe": round(metrics_econ.sharpe_ratio(y[m]), 4) if m.sum() > 1 else float("nan"),
                          "Mean Daily Return (%)": round(float(y[m].mean() * 100), 5) if m.sum() else float("nan"),
                          "Directional Acc.": round(float(hit[ma].mean() * 100), 2) if ma.sum() else float("nan")})
+    return pd.DataFrame(rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Regola di lettura dell'esecuzione — commento K13 del relatore
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Variante eseguibile di riferimento per asset (tesi, §1.2 e §1.3 "Strategy"):
+# apertura successiva per oro, argento e rame; ritardo di un giorno per il
+# platino, le cui aperture registrate sono in gran parte barre piatte (124
+# date su 211 nello snapshot OHLC) e quindi non transazioni reali.
+EXECUTABLE_REFERENCE = {"Gold": "open", "Silver": "open",
+                        "Copper": "open", "Platinum": "lag1"}
+
+
+def executable_variant(asset_name: str, available: set) -> str:
+    """
+    Variante eseguibile da usare per `asset_name`: quella di
+    EXECUTABLE_REFERENCE se è stata calcolata, altrimenti "lag1" (sempre
+    calcolata), per esempio se lo snapshot OHLC non ha superato i controlli.
+    """
+    v = EXECUTABLE_REFERENCE.get(asset_name, "lag1")
+    return v if v in available else "lag1"
+
+
+def executable_check(bt_all: dict) -> pd.DataFrame:
+    """
+    Regola di lettura della tesi (commento K13): un risultato economico
+    (alpha significativo, miglioramento della RCS sulla strategia statica)
+    è attribuito solo se è presente sia nell'esecuzione principale "close"
+    sia nella variante eseguibile di riferimento dell'asset.
+
+    bt_all[execution]["static" | "rcs"][asset] = {model_label: bt_dict},
+    con le colonne di Holm già calcolate per famiglia (main.py). Per ogni
+    asset e modello (Random Walk esclusa) riporta Sharpe e alpha nelle due
+    esecuzioni e tre indicatori:
+      - "Alpha Static Robust" / "Alpha RCS Robust": alpha significativo
+        dopo Holm in entrambe le esecuzioni, con lo stesso segno;
+      - "RCS Improvement Robust": Sharpe della RCS maggiore di quello
+        statico in entrambe le esecuzioni.
+    È un confronto descrittivo: nessuna nuova correzione per molteplicità.
+    """
+    rows = []
+    available = set(bt_all)
+    for asset_name, static_close in bt_all["close"]["static"].items():
+        v = executable_variant(asset_name, available)
+        static_exec = bt_all[v]["static"][asset_name]
+        rcs_close = bt_all["close"]["rcs"][asset_name]
+        rcs_exec = bt_all[v]["rcs"][asset_name]
+        for label in static_close:
+            if label == "Random Walk" or label not in rcs_close:
+                continue
+            row = {"Asset": asset_name, "Model": label, "Executable Variant": v}
+            for strat, close_res, exec_res in (("Static", static_close, static_exec),
+                                               ("RCS", rcs_close, rcs_exec)):
+                bc, be = close_res[label], exec_res[label]
+                sig_c = bool(bc.get("Alpha Sig. Holm (5%)", False))
+                sig_e = bool(be.get("Alpha Sig. Holm (5%)", False))
+                same_sign = np.sign(bc.get("Alpha (daily)", np.nan)) == \
+                    np.sign(be.get("Alpha (daily)", np.nan))
+                row.update({
+                    f"Sharpe {strat} (close)":       bc["Sharpe Ratio"],
+                    f"Sharpe {strat} (exec)":        be["Sharpe Ratio"],
+                    f"Alpha {strat} (close)":        bc.get("Alpha (daily)"),
+                    f"Alpha {strat} p Holm (close)": bc.get("Alpha p Holm"),
+                    f"Alpha {strat} (exec)":         be.get("Alpha (daily)"),
+                    f"Alpha {strat} p Holm (exec)":  be.get("Alpha p Holm"),
+                    f"Alpha {strat} Robust":         bool(sig_c and sig_e and same_sign),
+                })
+            impr_c = row["Sharpe RCS (close)"] > row["Sharpe Static (close)"]
+            impr_e = row["Sharpe RCS (exec)"] > row["Sharpe Static (exec)"]
+            row.update({"RCS > Static (close)": bool(impr_c),
+                        "RCS > Static (exec)": bool(impr_e),
+                        "RCS Improvement Robust": bool(impr_c and impr_e)})
+            rows.append(row)
     return pd.DataFrame(rows)
 
 

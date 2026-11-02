@@ -363,3 +363,79 @@ def test_k11_dl_fold_keeps_last_test_day():
     train_idx, test_idx = np.arange(0, n - 10), np.arange(n - 10, n)
     X_tr, X_te, y_tr, y_te, dates, n_feat = prepare_dl_fold(df, train_idx, test_idx)
     assert len(y_te) == 10 and dates[-1] == df.index[-1]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# K13 — regola di lettura: risultato economico confermato nella variante
+# eseguibile (apertura per oro/argento/rame, ritardo di un giorno per il platino)
+# ─────────────────────────────────────────────────────────────────────────
+
+def _bt(sharpe, alpha, sig):
+    return {"Sharpe Ratio": sharpe, "Alpha (daily)": alpha,
+            "Alpha p Holm": 0.01 if sig else 0.5, "Alpha Sig. Holm (5%)": sig}
+
+
+def _bt_all(executions):
+    # Gold: alpha statico significativo in close e in open, stesso segno;
+    # RCS migliore della statica solo in close.
+    # Platinum: alpha statico significativo solo in close.
+    vals = {
+        "close": {"Gold": (_bt(1.0, 1e-3, True), _bt(1.5, 1e-3, False)),
+                  "Platinum": (_bt(0.8, 2e-3, True), _bt(0.9, 2e-3, True))},
+        "open":  {"Gold": (_bt(0.6, 5e-4, True), _bt(0.4, 5e-4, False)),
+                  "Platinum": (_bt(0.7, 2e-3, True), _bt(0.8, 2e-3, True))},
+        "lag1":  {"Gold": (_bt(0.2, -1e-4, False), _bt(0.1, 1e-4, False)),
+                  "Platinum": (_bt(0.1, 1e-4, False), _bt(0.3, 1e-4, False))},
+    }
+    out = {}
+    for e in executions:
+        out[e] = {"static": {}, "rcs": {}}
+        for a, (s, r) in vals[e].items():
+            out[e]["static"][a] = {"ARMA": s, "Random Walk": _bt(0, 0, False)}
+            out[e]["rcs"][a] = {"ARMA": r}
+    return out
+
+
+def test_k13_executable_variant_and_fallback():
+    from src.backtesting import executable_variant
+    assert executable_variant("Gold", {"close", "lag1", "open"}) == "open"
+    assert executable_variant("Platinum", {"close", "lag1", "open"}) == "lag1"
+    assert executable_variant("Gold", {"close", "lag1"}) == "lag1"   # OHLC non valido
+
+
+def test_k13_executable_check_flags():
+    from src.backtesting import executable_check
+    df = executable_check(_bt_all(["close", "lag1", "open"])).set_index("Asset")
+    assert "Random Walk" not in set(df["Model"])
+    g, p = df.loc["Gold"], df.loc["Platinum"]
+    assert g["Executable Variant"] == "open" and p["Executable Variant"] == "lag1"
+    assert bool(g["Alpha Static Robust"]) is True
+    assert bool(g["RCS > Static (close)"]) and not bool(g["RCS > Static (exec)"])
+    assert bool(g["RCS Improvement Robust"]) is False
+    # platino: confrontato con lag1, dove l'alpha non è significativo
+    assert bool(p["Alpha Static Robust"]) is False
+    assert bool(p["RCS Improvement Robust"]) is True
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# K03 — traccia del tentativo di serie rollata (tools/build_rolled_series.py)
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_k03_contract_report_counts_available_returns():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "tools", "build_rolled_series.py")
+    spec = importlib.util.spec_from_file_location("build_rolled_series", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    days = pd.bdate_range("2026-01-05", periods=6)
+    oos, prev = days[1:], days[:-1]
+    held = [(2026, 2)] * 3 + [(2026, 4)] * 2
+    prices = {(2026, 2): pd.Series(1.0, index=days[:4]),     # tutte disponibili
+              (2026, 4): pd.Series(dtype=float)}             # nessun prezzo
+    rows = {r["Contract"]: r for r in mod.contract_report("Gold", oos, prev, held, prices)}
+    assert set(rows) == {"GCG26.CMX", "GCJ26.CMX"}
+    assert rows["GCG26.CMX"]["N OOS Days With Return"] == 3 and rows["GCG26.CMX"]["Complete"]
+    assert rows["GCJ26.CMX"]["N Prices Downloaded"] == 0
+    assert rows["GCJ26.CMX"]["N OOS Days With Return"] == 0 and not rows["GCJ26.CMX"]["Complete"]

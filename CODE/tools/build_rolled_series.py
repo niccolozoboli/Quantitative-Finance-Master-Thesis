@@ -18,8 +18,10 @@ Da eseguire su Colab (questo ambiente non raggiunge Yahoo Finance):
 
 Scrive CODE/data/<ticker>_rolled.csv (Date, Contract, R_rolled,
 R_continuous) solo se TUTTE le date OOS hanno un rendimento; altrimenti
-stampa cosa manca e non scrive nulla, e main.py usa solo la sensitivity
-sui giorni di roll. I ticker Yahoo dei singoli contratti (es. GCZ25.CMX)
+non scrive la serie e main.py usa solo la sensitivity sui giorni di roll.
+In ogni caso scrive CODE/data/rolled_series_report.csv, con l'esito del
+download di ciascun contratto: è la traccia, da versionare, del tentativo
+richiesto dal relatore (la tesi la cita per motivare la strada scelta). I ticker Yahoo dei singoli contratti (es. GCZ25.CMX)
 seguono la convenzione <radice><codice mese><anno a 2 cifre>.<borsa>:
 la loro disponibilità va verificata al momento dell'esecuzione.
 """
@@ -57,7 +59,33 @@ def download_close(ticker: str, start, end) -> pd.Series:
     return s
 
 
+def contract_report(asset: str, oos: pd.DatetimeIndex, prev: pd.DatetimeIndex,
+                    held: list, prices: dict) -> list:
+    """
+    Una riga per contratto detenuto nel periodo OOS: ticker, numero di
+    prezzi scaricati, primo e ultimo giorno disponibile, date OOS in cui il
+    contratto è detenuto e quante di queste hanno un rendimento calcolabile
+    (prezzo del contratto sia nella data sia nel giorno di borsa precedente).
+    """
+    rows = []
+    for c in sorted(set(held)):
+        p = prices[c]
+        days = [(d, dp) for d, dp, h in zip(oos, prev, held) if h == c]
+        ok = sum(d in p.index and dp in p.index for d, dp in days)
+        rows.append({
+            "Asset": asset, "Contract": contract_ticker(asset, *c),
+            "N Prices Downloaded": int(len(p)),
+            "First Price Date": p.index.min().date() if len(p) else None,
+            "Last Price Date": p.index.max().date() if len(p) else None,
+            "N OOS Days Held": len(days),
+            "N OOS Days With Return": int(ok),
+            "Complete": ok == len(days),
+        })
+    return rows
+
+
 if __name__ == "__main__":
+    report_rows = []
     for asset, ticker in METALS.items():
         df = load_and_preprocess(asset, ticker)
         oos = df.index[-N_OOS:]
@@ -67,6 +95,7 @@ if __name__ == "__main__":
         end = oos[-1] + pd.Timedelta(days=5)
         prices = {c: download_close(contract_ticker(asset, *c), start, end)
                   for c in sorted(set(held))}
+        report_rows += contract_report(asset, oos, prev, held, prices)
         rows = []
         for d, d_prev, c in zip(oos, prev, held):
             p = prices[c]
@@ -87,3 +116,9 @@ if __name__ == "__main__":
         out.to_csv(path)
         corr = out["R_rolled"].corr(out["R_continuous"])
         print(f"  scritto {path}; correlazione con la serie continua = {corr:.4f}")
+
+    report = pd.DataFrame(report_rows)
+    report_path = os.path.join(_DATA_DIR, "rolled_series_report.csv")
+    report.to_csv(report_path, index=False)
+    print(f"\nEsito del download dei contratti scritto in {report_path}")
+    print(report.to_string(index=False))
