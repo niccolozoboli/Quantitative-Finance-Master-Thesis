@@ -76,6 +76,13 @@ def test_resume_marker_is_predictions_csv_only(tmp_path, monkeypatch):
         )
     monkeypatch.setattr(main, "get_walk_forward_folds", _tripwire)
 
+    # Le previsioni GARCH non sono su disco: la ripresa calcola il solo
+    # GARCH (rilievo RC9), senza rifare il training dei modelli.
+    garch_calls = []
+    monkeypatch.setattr(main, "_garch_live",
+                        lambda name, df_, folds=None, n_folds=None:
+                        (garch_calls.append(name) or ([], None, pd.DataFrame())))
+
     results_df = main.run_pipeline(resume=True, smoke=False)
 
     # ── L'asset è stato ricostruito (non saltato silenziosamente) ──────────
@@ -85,3 +92,4 @@ def test_resume_marker_is_predictions_csv_only(tmp_path, monkeypatch):
     assert (tmp_path / "backtest_Gold.csv").exists()       # scritto ora, post-Holm
     assert (tmp_path / "backtest_rcs_Gold.csv").exists()
     assert (tmp_path / "strategy_returns_Gold.csv").exists()
+    assert garch_calls == ["Gold"]

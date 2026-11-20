@@ -352,7 +352,8 @@ def _prepare_D_inputs(asset_data: dict):
 
 
 def _D_operator(Y: dict, RG: np.ndarray, model_names: list, assets: list,
-                idx: np.ndarray, aggregation: str, min_obs: int) -> dict:
+                idx: np.ndarray, aggregation: str, min_obs: int,
+                required_assets: list = None) -> dict:
     """
     Unico operatore usato sia per la stima puntuale (idx = arange(n)) sia
     per ogni replica bootstrap (idx = date ricampionate): il pooling è
@@ -371,6 +372,12 @@ def _D_operator(Y: dict, RG: np.ndarray, model_names: list, assets: list,
 
     "per_asset" (controllo): D_i calcolata sul singolo asset; D = media delle
     D_i sugli asset le cui tre celle hanno almeno `min_obs` giorni.
+    Con `required_assets` (repliche bootstrap) l'insieme degli asset è
+    fissato a quello della stima puntuale: la replica è valida solo se
+    tutti quegli asset hanno le tre celle valide, e D è la media delle loro
+    D_i. Senza questo vincolo la media sarebbe presa su insiemi di asset
+    diversi da replica a replica, cioè con un operatore diverso da quello
+    della stima puntuale (rilievo R14 della revisione del codice).
     """
     rg = RG[:, idx]
     G, M = len(_D_REGIMES), len(model_names)
@@ -405,7 +412,11 @@ def _D_operator(Y: dict, RG: np.ndarray, model_names: list, assets: list,
                 used.append(a)
             else:
                 D_i[a] = float("nan")
-        valid = len(used) > 0
+        if required_assets is not None:
+            valid = len(required_assets) > 0 and all(a in used for a in required_assets)
+            used = list(required_assets)
+        else:
+            valid = len(used) > 0
         D = float(np.mean([D_i[a] for a in used])) if valid else float("nan")
         return {"D": D, "D_i": D_i, "S_by_asset": S_all, "counts": counts_all,
                 "valid": valid, "assets_used": used}
@@ -440,7 +451,9 @@ def architecture_vs_regime_D(asset_data: dict,
     stessi blocchi di date per tutti i modelli e gli asset; le etichette di
     regime viaggiano con le date. La regola di scarto (replica scartata se
     una cella ha meno di `min_obs_per_cell` date) fa parte dello stimatore:
-    la frazione di repliche scartate è restituita e va riportata.
+    la frazione di repliche scartate è restituita e va riportata. Nel
+    controllo "per_asset" ogni replica usa gli stessi asset della stima
+    puntuale (`required_assets` di _D_operator).
 
     asset_data: {asset_name: {"y": {model_name: net_pnl (T,)},
                                "dates": DatetimeIndex (T,),
@@ -454,12 +467,21 @@ def architecture_vs_regime_D(asset_data: dict,
 
     rng = np.random.default_rng(seed)
     D_boot = []
+    discards_by_asset = {a: 0 for a in point["assets_used"]}
     for _ in range(n_boot):
         idx = _block_indices(rng, n, block_length)
         res = _D_operator(Y, RG, model_names, assets, idx,
-                          aggregation, min_obs_per_cell)
+                          aggregation, min_obs_per_cell,
+                          required_assets=(point["assets_used"]
+                                           if aggregation == "per_asset" else None))
         if res["valid"]:
             D_boot.append(res["D"])
+        elif aggregation == "per_asset":
+            # motivo dello scarto: asset della stima puntuale con una cella
+            # sotto la soglia (una replica può contarne più d'uno)
+            for a in point["assets_used"]:
+                if min(res["counts"][a].values()) < min_obs_per_cell:
+                    discards_by_asset[a] += 1
     D_boot = np.array(D_boot)
     n_used = len(D_boot)
     a_ = 1 - ci
@@ -485,6 +507,7 @@ def architecture_vs_regime_D(asset_data: dict,
             point["S"], index=model_names, columns=_D_REGIMES)
     else:
         out["D by Asset"] = point["D_i"]
+        out["Discards by Asset"] = discards_by_asset
         out["Sharpe by Model-Regime"] = pd.concat(
             {a: pd.DataFrame(point["S_by_asset"][a], index=model_names,
                              columns=_D_REGIMES) for a in assets},
@@ -580,7 +603,9 @@ def two_way_decomposition(asset_data: dict, block_length: int = 10,
 def exposure_benchmarks(y_true: np.ndarray, dates: pd.DatetimeIndex,
                         regimes: pd.Series, asset_name: str,
                         rcs_results: dict, n_rand: int = 1000,
-                        seed: int = 42, cost_per_side: float = 0.0001) -> tuple:
+                        seed: int = 42, cost_per_side: float = 0.0001,
+                        execution: str = "close",
+                        alt_returns: np.ndarray = None) -> tuple:
     """
     Separa il valore del forecast dal valore del filtro di volatilità:
     la stessa regola di esposizione a_t della RCS è applicata a
@@ -591,7 +616,11 @@ def exposure_benchmarks(y_true: np.ndarray, dates: pd.DatetimeIndex,
     (n_rand + 1) e se la sua RCS coincide con il long filtrato (posizione
     mai negativa quando esposta).
 
-    rcs_results: {model_label: dict di run_backtest della RCS}
+    rcs_results: {model_label: dict di run_backtest della RCS}, calcolati
+    con la stessa `execution`. Con execution="lag1" run_backtest ritarda
+    anche le posizioni a_t e a_t*e_t, come quelle della RCS; con "open"
+    usa `alt_returns` (rendimenti open-to-open). Così i benchmark hanno la
+    stessa tempistica della RCS a cui sono confrontati (commento K13).
     Ritorna (summary_dict, per_model_DataFrame, a_t).
     """
     y_true = np.asarray(y_true, dtype=float).flatten()
@@ -599,15 +628,18 @@ def exposure_benchmarks(y_true: np.ndarray, dates: pd.DatetimeIndex,
     ones = np.ones(n)
     a = regime_conditional_strategy(ones, dates, regimes)
 
+    ex = {"execution": execution, "alt_returns": alt_returns}
     long_passive = run_backtest(y_true, ones, dates=dates, asset_name=asset_name,
-                                cost_per_side=cost_per_side, position=ones)
+                                cost_per_side=cost_per_side, position=ones, **ex)
     long_filt = run_backtest(y_true, ones, dates=dates, asset_name=asset_name,
-                             cost_per_side=cost_per_side, position=a)
+                             cost_per_side=cost_per_side, position=a, **ex)
     rng = np.random.default_rng(seed)
     sr_rand = np.array([
         run_backtest(y_true, e, dates=dates, asset_name=asset_name,
-                     cost_per_side=cost_per_side, position=e * a)["Sharpe Ratio"]
+                     cost_per_side=cost_per_side, position=e * a, **ex)["Sharpe Ratio"]
         for e in rng.choice([-1.0, 1.0], size=(n_rand, n))])
+    # esposizione effettivamente eseguita, sui giorni tenuti
+    a_exec = np.asarray(long_filt["Position"], dtype=float)
 
     summary = {
         "Sharpe Long Passive":           long_passive["Sharpe Ratio"],
@@ -617,6 +649,7 @@ def exposure_benchmarks(y_true: np.ndarray, dates: pd.DatetimeIndex,
         "Sharpe Random Filtered P95":    round(float(np.percentile(sr_rand, 95)), 4),
         "Frac. Days Exposed":            round(float((a > 0).mean()), 4),
         "N Random":                      n_rand,
+        "Execution":                     execution,
     }
     rows = []
     for label, bt in rcs_results.items():
@@ -627,7 +660,8 @@ def exposure_benchmarks(y_true: np.ndarray, dates: pd.DatetimeIndex,
             "Sharpe RCS": sr,
             "p_emp vs Random Filtered": round(float((1 + np.sum(sr_rand >= sr)) / (n_rand + 1)), 4),
             "RCS minus Long Filtered (Sharpe)": round(sr - long_filt["Sharpe Ratio"], 4),
-            "Identical to Long Filtered": bool(np.all(pos[a > 0] > 0) and np.all(pos[a == 0] == 0)),
+            "Identical to Long Filtered": bool(np.all(pos[a_exec > 0] > 0)
+                                               and np.all(pos[a_exec == 0] == 0)),
         })
     return summary, pd.DataFrame(rows).set_index("Model"), a
 
@@ -673,11 +707,19 @@ EXECUTABLE_REFERENCE = {"Gold": "open", "Silver": "open",
 def executable_variant(asset_name: str, available: set) -> str:
     """
     Variante eseguibile da usare per `asset_name`: quella di
-    EXECUTABLE_REFERENCE se è stata calcolata, altrimenti "lag1" (sempre
-    calcolata), per esempio se lo snapshot OHLC non ha superato i controlli.
+    EXECUTABLE_REFERENCE se è stata calcolata PER QUESTO ASSET, altrimenti
+    "lag1" (sempre calcolata), per esempio se lo snapshot OHLC dell'asset
+    non ha superato i controlli. `available` sono le esecuzioni calcolate
+    per l'asset (vedi `executions_for_asset`), non l'unione su tutti gli
+    asset.
     """
     v = EXECUTABLE_REFERENCE.get(asset_name, "lag1")
     return v if v in available else "lag1"
+
+
+def executions_for_asset(bt_all: dict, asset_name: str) -> set:
+    """Esecuzioni di bt_all[execution]["static"] che contengono l'asset."""
+    return {e for e, b in bt_all.items() if asset_name in b.get("static", {})}
 
 
 def executable_check(bt_all: dict) -> pd.DataFrame:
@@ -698,9 +740,8 @@ def executable_check(bt_all: dict) -> pd.DataFrame:
     È un confronto descrittivo: nessuna nuova correzione per molteplicità.
     """
     rows = []
-    available = set(bt_all)
     for asset_name, static_close in bt_all["close"]["static"].items():
-        v = executable_variant(asset_name, available)
+        v = executable_variant(asset_name, executions_for_asset(bt_all, asset_name))
         static_exec = bt_all[v]["static"][asset_name]
         rcs_close = bt_all["close"]["rcs"][asset_name]
         rcs_exec = bt_all[v]["rcs"][asset_name]

@@ -145,7 +145,9 @@ def diebold_mariano_test(y_true: np.ndarray,
     hac_var = max(newey_west_lrv(d, L), 1e-12)
 
     dm_stat = d_mean / np.sqrt(hac_var / n)
-    p_value = 2 * (1 - stats.norm.cdf(abs(dm_stat)))
+    # sf invece di 1 - cdf: per |DM| grande 1 - cdf vale esattamente 0 in
+    # virgola mobile (rilievo R11 della revisione del codice).
+    p_value = 2 * stats.norm.sf(abs(dm_stat))
 
     if p_value < 0.05:
         better = "model1" if dm_stat < 0 else "model2"
@@ -155,6 +157,9 @@ def diebold_mariano_test(y_true: np.ndarray,
     return {
         "dm_statistic": round(float(dm_stat), 4),
         "p_value":      round(float(p_value), 4),
+        # p-value non arrotondato: è quello su cui va applicata la correzione
+        # di Holm; "p_value" resta arrotondato solo per la stampa (R11).
+        "p_value_raw":  float(p_value),
         "hac_lag":      int(L),
         "significant":  p_value < 0.05,
         "better":       better,
@@ -203,6 +208,7 @@ def build_dm_table(y_true: np.ndarray,
             "Model":       model_name,
             "DM Stat":     result["dm_statistic"],
             "p-value":     result["p_value"],
+            "p-value (raw)": result["p_value_raw"],
             "HAC Lag (L)": result["hac_lag"],
             "Sig. (5%)":   "Yes" if result["significant"] else "No",
             "Result":      result["interpretation"]
@@ -222,7 +228,7 @@ def dm_test_loss(loss1: np.ndarray, loss2: np.ndarray,
     n = len(d)
     L = hac_lag if hac_lag is not None else _newey_west_lag(n)
     dm = float(d.mean() / np.sqrt(max(newey_west_lrv(d, L), 1e-12) / n))
-    return {"DM Stat": dm, "p-value": float(2 * (1 - stats.norm.cdf(abs(dm)))),
+    return {"DM Stat": dm, "p-value": float(2 * stats.norm.sf(abs(dm))),
             "HAC Lag (L)": int(L), "N": n}
 
 
@@ -261,7 +267,7 @@ def da_test_hac(hit: np.ndarray, active: np.ndarray,
         return out
     t = float((h.mean() - 0.5) / np.sqrt(omega / n))
     out.update({"DA t (HAC)": t,
-                "DA p-value (HAC)": float(2 * (1 - stats.norm.cdf(abs(t)))),
+                "DA p-value (HAC)": float(2 * stats.norm.sf(abs(t))),
                 "DA HAC Lag": int(L)})
     return out
 

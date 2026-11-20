@@ -306,7 +306,7 @@ def run_transformer_fold(df, train_idx, test_idx, cross_asset_dfs=None,
     model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
 
     params = {
-        "architecture": f"Transformer(heads=4,ff=128,blocks=2,PE=sinusoidal*{PE_ALPHA})->Dense(1)",
+        "architecture": f"Transformer(heads=4,ff=128,blocks=2,PE=sinusoidal*{PE_ALPHA})->GAP->Dense(64)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
         "pe_alpha": PE_ALPHA, "best_epoch": e_star, "seed": seed,
     }
@@ -394,7 +394,7 @@ def run_tcn_fold(df, train_idx, test_idx, cross_asset_dfs=None,
     model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
 
     params = {
-        "architecture": "TCN(dilations=[1,2,4],kernel=3)->Dense(1)",
+        "architecture": "TCN(dilations=[1,2,4],kernel=3)->last step->Dense(32)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat,
         "receptive_field": tcn_receptive_field(TCN_LAYERS), "dropout": DROPOUT,
         "best_epoch": e_star, "seed": seed,
@@ -419,7 +419,7 @@ def run_tcn31_fold(df, train_idx, test_idx, cross_asset_dfs=None,
 
     model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
     params = {
-        "architecture": "TCN(dilations=[1,2,4,8],kernel=3)->Dense(1)",
+        "architecture": "TCN(dilations=[1,2,4,8],kernel=3)->last step->Dense(32)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat,
         "receptive_field": tcn_receptive_field(TCN31_LAYERS),
         "dropout": DROPOUT, "best_epoch": e_star, "seed": seed,
@@ -438,7 +438,7 @@ def run_cnn_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None,
 
     RAZIONALE:
     Molto citato nella letteratura su commodity price forecasting
-    (es. Livieris et al. 2020 — già nella tua bibliografia).
+    (es. Livieris et al. 2020).
     La CNN cattura pattern locali nella sequenza (es. inversioni a V,
     picchi di volatilità), mentre l'LSTM cattura le dipendenze
     temporali a più lungo raggio.
@@ -447,7 +447,7 @@ def run_cnn_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None,
     1. Conv1D(32, kernel=3) — estrae pattern locali su 3 giorni
     2. MaxPooling1D(2) — riduce la dimensione temporale (20→10)
     3. LSTM(64) — impara dipendenze su sequenza compressa
-    4. Dense(1) — output
+    4. Dense(32, relu) e Dense(1) — output
 
     Questo design è deliberatamente asimmetrico:
     la CNN comprime la rappresentazione locale,
@@ -486,7 +486,7 @@ def run_cnn_lstm_fold(df, train_idx, test_idx, cross_asset_dfs=None,
     model, e_star = _train_with_refit(build, X_tr, y_tr, seed=seed)
 
     params = {
-        "architecture": "Conv1D(32,k=3)->MaxPool->LSTM(64)->Dense(1)",
+        "architecture": "Conv1D(32,k=3)->MaxPool->LSTM(64)->Dense(32)->Dense(1)",
         "seq_len": SEQ_LEN, "n_features": n_feat, "dropout": DROPOUT,
         "best_epoch": e_star, "seed": seed,
     }

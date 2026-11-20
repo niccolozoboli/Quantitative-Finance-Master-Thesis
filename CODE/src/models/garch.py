@@ -31,6 +31,49 @@ def qlike_loss(sigma_hat: np.ndarray, r: np.ndarray) -> np.ndarray:
     return np.log(v) + np.asarray(r, dtype=float) ** 2 / v
 
 
+def fit_garch_params(df: pd.DataFrame, train_idx, dist: str = "normal") -> dict:
+    """
+    Stima su T_k del GARCH(1,1) a media costante (rendimenti x 100) e
+    restituisce alpha, beta, persistenza e nu. È la stessa stima usata da
+    run_garch_fold per i parametri riportati in tesi; la ripresa
+    (--resume) e tools/recompute_post_run.py la richiamano per ricostruire
+    i parametri senza rifare le previsioni giornaliere (rilievo R5).
+    """
+    if dist not in GARCH_DISTS:
+        raise ValueError(f"dist deve essere uno di {GARCH_DISTS}")
+    train_s = pd.Series(df["log_return"].values[train_idx] * 100)
+    model_fit = arch_model(train_s, vol="Garch", p=1, q=1,
+                           mean="Constant", dist=dist).fit(disp="off")
+    return {
+        "alpha":       round(float(model_fit.params.get("alpha[1]", 0)), 6),
+        "beta":        round(float(model_fit.params.get("beta[1]",  0)), 6),
+        "persistence": round(
+            float(model_fit.params.get("alpha[1]", 0)) +
+            float(model_fit.params.get("beta[1]",  0)), 6
+        ),
+        "nu":          (round(float(model_fit.params.get("nu")), 4)
+                        if "nu" in model_fit.params else None),
+    }
+
+
+def garch_fold_losses(sigma_hat: np.ndarray, r: np.ndarray) -> dict:
+    """
+    Loss di un fold: RMSE rispetto a |r| (proxy descrittivo, arrotondato a
+    8 decimali come compute_metrics), RMSE rispetto al proxy riscalato
+    |r|*sqrt(pi/2) e QLIKE media. Unica definizione usata dal ciclo
+    principale di main.py, dalla ripresa e dallo script di ricalcolo.
+    """
+    sigma_hat = np.asarray(sigma_hat, dtype=float)
+    r = np.asarray(r, dtype=float)
+    abs_r = np.abs(r)
+    return {
+        "loss_RMSE": round(float(np.sqrt(np.mean((abs_r - sigma_hat) ** 2))), 8),
+        "loss_RMSE_scaled_proxy": float(np.sqrt(np.mean(
+            (sigma_hat - abs_r * np.sqrt(np.pi / 2)) ** 2))),
+        "QLIKE": float(np.mean(qlike_loss(sigma_hat, r))),
+    }
+
+
 def run_garch_fold(df: pd.DataFrame, train_idx, test_idx, dist: str = "normal"):
     """
     GARCH(1,1) a media costante, quasi-massima verosimiglianza con
@@ -51,9 +94,6 @@ def run_garch_fold(df: pd.DataFrame, train_idx, test_idx, dist: str = "normal"):
     test_dates = df.index[test_idx]
     n_test     = len(test_idx)
 
-    model_fit = arch_model(train_s, vol="Garch", p=1, q=1,
-                            mean="Constant", dist=dist).fit(disp="off")
-
     # Rolling one-step-ahead forecast
     history      = list(train_s)
     forecast_vol = []
@@ -67,14 +107,5 @@ def run_garch_fold(df: pd.DataFrame, train_idx, test_idx, dist: str = "normal"):
 
     realized_vol = np.abs(df["log_return"].values[test_idx])
 
-    params = {
-        "alpha":       round(float(model_fit.params.get("alpha[1]", 0)), 6),
-        "beta":        round(float(model_fit.params.get("beta[1]",  0)), 6),
-        "persistence": round(
-            float(model_fit.params.get("alpha[1]", 0)) +
-            float(model_fit.params.get("beta[1]",  0)), 6
-        ),
-        "nu":          (round(float(model_fit.params.get("nu")), 4)
-                        if "nu" in model_fit.params else None),
-    }
+    params = fit_garch_params(df, train_idx, dist=dist)
     return test_dates, realized_vol, np.array(forecast_vol), params

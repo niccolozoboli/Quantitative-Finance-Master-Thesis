@@ -7,8 +7,9 @@ esplorativa (Capitolo 3) della tesi.
 
 Usa load_and_preprocess() con START/END identici a main.py, quindi
 stesso periodo e stesso preprocessing della pipeline principale.
-Non fa training, non importa nulla da src/models — solo download
-(via yfinance, serve connessione) e statistiche descrittive dirette.
+Non fa training e non importa nulla da src/models. I prezzi vengono
+dagli snapshot in CODE/data/ (gli stessi di main.py); yfinance e la
+connessione servono solo se uno snapshot manca (vedi load_and_preprocess).
 
 Uso: da dentro CODE/
     python3 descriptive_stats.py

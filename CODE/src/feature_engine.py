@@ -409,9 +409,9 @@ def prepare_dl_fold(df: pd.DataFrame,
     X_test  = np.array(X_test)    # (n_test,  seq_len, n_features)
     y_test  = np.array(y_test)
 
-    # Date per le previsioni di test
-    dates = test_feat.index[seq_len - len(y_test) + len(y_test) - len(y_test):]
-    # Gestione robusta: allinea le date all'effettivo numero di campioni di test
+    # Date delle previsioni di test: le ultime len(y_test) date di test_feat.
+    # main.py (_align_fold_output) verifica che coincidano con le date del
+    # fold; con SEQ_LEN < |T_k| ogni giorno di test ha la sua sequenza.
     dates = test_feat.index[len(test_feat) - len(y_test):]
 
     return X_train, X_test, y_train, y_test, dates, n_features
@@ -424,9 +424,9 @@ def prepare_dl_fold(df: pd.DataFrame,
 def get_n_features(df: pd.DataFrame,
                     cross_asset_dfs: dict = None) -> int:
     """
-    Calcola il numero di feature DL senza costruire il dataset completo.
-    Non chiamata da main.py (i modelli DL leggono n_features direttamente
-    da prepare_dl_fold) — utility per ispezionare l'input shape a parte.
+    Numero di feature per passo temporale delle reti. main.py la usa solo
+    per il file pe_channel_variance.csv (un valore per canale del
+    positional encoding); i modelli leggono n_features da prepare_dl_fold.
     """
     feat_df = build_dl_features(df, cross_asset_dfs=cross_asset_dfs)
     return len(feat_df.columns)

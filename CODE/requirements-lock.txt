@@ -1,0 +1,19 @@
+# Versioni esatte dell'esecuzione citata in tesi (rilievo R17).
+# Fonte: results/run_manifest.json dell'esecuzione del commit 2586f06
+# (Python 3.13.16, Linux, GPU Colab). Installazione:
+#     pip install -r requirements-lock.txt
+# requirements.txt resta la lista dei minimi compatibili.
+numpy==2.4.6
+pandas==2.2.3
+scikit-learn==1.6.1
+xgboost==3.4.1
+statsmodels==0.15.0
+arch==8.0.0
+tensorflow==2.21.0
+keras==3.13.2
+yfinance==0.2.66
+# scipy e matplotlib non erano registrati nel manifest di quell'esecuzione
+# (lo sono dalle esecuzioni successive): qui restano i minimi.
+scipy>=1.11.0
+matplotlib>=3.8.0
+pytest>=8.0.0
